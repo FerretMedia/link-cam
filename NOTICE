@@ -1,0 +1,20 @@
+Link Cam
+Copyright 2026 Ferret Media
+
+This product is licensed under the Apache License, Version 2.0 (see LICENSE),
+with the exception of the files in the /brand directory, which are not
+licensed under it (see brand/LICENSE).
+
+"Link Cam", "Linker", "Ferret Media", the Link Cam glyph and the Linker
+wordmark are trademarks of Ferret Media. The Apache License does not grant
+permission to use them (section 6). See TRADEMARKS.md.
+
+This product includes third-party software, fetched at build time:
+
+- libusb (https://libusb.info), GNU Lesser General Public License v2.1.
+  Linked dynamically as libusb-1.0.so, so it can be replaced with a
+  compatible build.
+- libuvc (https://github.com/libuvc/libuvc), BSD 3-Clause License.
+- libjpeg-turbo (https://libjpeg-turbo.org), IJG License and BSD 3-Clause
+  License. This software is based in part on the work of the Independent
+  JPEG Group.

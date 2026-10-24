@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- USB class 14 is Video. Android matches it against the device's interfaces
+     too, which is where a UVC device declares it. -->
+<resources>
+    <usb-device class="14" />
+</resources>

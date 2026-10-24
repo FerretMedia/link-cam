@@ -1,0 +1,13 @@
+Copyright 2026 Ferret Media. All rights reserved.
+
+The files in this directory (the Link Cam name, glyph, launcher icon and
+other brand artwork, in any format) are NOT licensed under the Apache License
+that covers the rest of this repository.
+
+They are included so the official app can be built from this source. You may
+build and run the app with them for your own personal use, evaluation and
+development. Any other use, including distributing a build that contains
+them, publishing them in an app store, on a website or in marketing, requires
+written permission from Ferret Media.
+
+See TRADEMARKS.md at the root of the repository.

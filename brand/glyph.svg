@@ -1,0 +1,6 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="#FAFAFA" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+  <!-- Link Cam: a little monitor with a tally light. The dot turns crimson when recording or live. -->
+  <rect x="2" y="4" width="20" height="13" rx="2.5"/>
+  <path d="M12 17v3.5M8.5 20.5h7"/>
+  <circle cx="17.5" cy="8.5" r="1.5" fill="#F52BD0" stroke="none"/>
+</svg>
