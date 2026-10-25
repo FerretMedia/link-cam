@@ -61,6 +61,8 @@ dependencies {
     debugImplementation(libs.compose.ui.tooling)
     implementation(libs.kotlinx.coroutines.android)
     implementation(libs.kotlinx.serialization.json)
+    // On-device, model bundled: reads the camera's Wi-Fi screen with no internet, as on the camera's own Wi-Fi.
+    implementation(libs.mlkit.text.recognition)
 
     testImplementation(libs.junit)
 }

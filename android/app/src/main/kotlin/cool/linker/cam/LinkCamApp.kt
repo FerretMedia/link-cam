@@ -1,6 +1,7 @@
 package cool.linker.cam
 
 import android.app.Application
+import cool.linker.cam.camera.CameraLink
 import cool.linker.cam.services.SettingsStore
 import cool.linker.cam.services.UsbService
 import cool.linker.cam.source.SourceManager
@@ -15,10 +16,14 @@ class LinkCamApp : Application() {
         private set
     lateinit var tools: ToolsManager
         private set
+    lateinit var camera: CameraLink
+        private set
 
     override fun onCreate() {
         super.onCreate()
         sources = SourceManager(this, UsbService(this))
-        tools = ToolsManager(SettingsStore(this))
+        val store = SettingsStore(this)
+        tools = ToolsManager(store)
+        camera = CameraLink(this, store)
     }
 }

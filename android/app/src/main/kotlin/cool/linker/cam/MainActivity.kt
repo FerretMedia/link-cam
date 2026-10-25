@@ -5,6 +5,7 @@ import android.content.Intent
 import android.hardware.usb.UsbDevice
 import android.hardware.usb.UsbManager
 import android.os.Bundle
+import android.view.WindowManager
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
@@ -15,6 +16,7 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.core.content.IntentCompat
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import cool.linker.cam.camera.CameraLink
 import cool.linker.cam.source.SourceManager
 import cool.linker.cam.source.SourceState
 import cool.linker.cam.tools.ToolsManager
@@ -28,10 +30,15 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
+        // Full brightness while Link Cam is on screen, for judging a picture
+        // outdoors. Android puts the user's own level back when it leaves.
+        window.attributes = window.attributes.apply {
+            screenBrightness = WindowManager.LayoutParams.BRIGHTNESS_OVERRIDE_FULL
+        }
         if (savedInstanceState == null) handleUsbIntent(intent)
         setContent {
             LinkCamTheme {
-                LinkCam(app.sources, app.tools)
+                LinkCam(app.sources, app.tools, app.camera)
             }
         }
     }
@@ -44,6 +51,12 @@ class MainActivity : ComponentActivity() {
     override fun onResume() {
         super.onResume()
         app.sources.refreshDevices()
+        app.camera.resume()
+    }
+
+    override fun onStop() {
+        super.onStop()
+        app.camera.pause()
     }
 
     /** Opened because a capture device was plugged in: go straight to it. */
@@ -55,7 +68,7 @@ class MainActivity : ComponentActivity() {
 }
 
 @Composable
-private fun LinkCam(sources: SourceManager, toolsManager: ToolsManager) {
+private fun LinkCam(sources: SourceManager, toolsManager: ToolsManager, camera: CameraLink) {
     val state by sources.state.collectAsStateWithLifecycle()
     val tools by toolsManager.state.collectAsStateWithLifecycle()
 
@@ -70,6 +83,7 @@ private fun LinkCam(sources: SourceManager, toolsManager: ToolsManager) {
             live = s,
             tools = tools,
             toolsManager = toolsManager,
+            camera = camera,
             frames = sources.frames,
             onSelectFormat = sources::selectFormat,
             onColorSpec = sources::setColorSpec,
