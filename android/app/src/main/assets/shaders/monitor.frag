@@ -29,54 +29,29 @@ uniform vec3 uPeakColor;
 uniform float uTime;            // Seconds, to move the zebra stripes
 
 uniform int uTransfer;          // Transfer.ordinal: 0 SDR, 1 PQ, 2 HLG
-uniform float uDenoise;         // NoiseReduction.rangeWeight; 0 is off
-uniform vec2 uChromaTexel;      // One chroma sample in texture space
-
-// --- noise reduction ---------------------------------------------------------
-// A 5×5 bilateral filter on luma: neighbours count by distance and by how close
-// their level is, so grain averages out and edges, which differ by more than
-// grain does, stay. Chroma, half resolution and blotchy out of MJPEG, gets a
-// small cross average.
-
-const float SPATIAL = 0.22;     // 1/(2σ²) for σ = 1.5 source pixels
-
-float smoothLuma(vec2 uv, float centre) {
-    float sum = centre;
-    float weight = 1.0;
-    for (int j = -2; j <= 2; j++) {
-        for (int i = -2; i <= 2; i++) {
-            if (i == 0 && j == 0) continue;
-            float s = texture(uY, uv + vec2(float(i), float(j)) * uLumaTexel).r;
-            float d = s - centre;
-            float w = exp(-float(i * i + j * j) * SPATIAL - d * d * uDenoise);
-            sum += s * w;
-            weight += w;
-        }
-    }
-    return sum / weight;
-}
-
-vec2 smoothChroma(vec2 uv) {
-    vec2 d = uChromaTexel;
-    vec2 c = vec2(texture(uCb, uv).r, texture(uCr, uv).r) * 2.0;
-    c += vec2(texture(uCb, uv + vec2(d.x, 0.0)).r, texture(uCr, uv + vec2(d.x, 0.0)).r);
-    c += vec2(texture(uCb, uv - vec2(d.x, 0.0)).r, texture(uCr, uv - vec2(d.x, 0.0)).r);
-    c += vec2(texture(uCb, uv + vec2(0.0, d.y)).r, texture(uCr, uv + vec2(0.0, d.y)).r);
-    c += vec2(texture(uCb, uv - vec2(0.0, d.y)).r, texture(uCr, uv - vec2(0.0, d.y)).r);
-    return c / 6.0;
-}
+uniform bool uClean;            // Read uCleaned, denoise.frag's output, instead of the planes
+uniform sampler2D uCleaned;     // Y', Cb, Cr codes as 0..1, at luma resolution
 
 // --- HDR to normal footage ---------------------------------------------------
 // shared/model/Hdr is the reference, step for step: undo PQ or HLG to light,
-// put reference white (203 nits) at 1.0, BT.2020 to BT.709 primaries, tone-map
-// luminance with a soft shoulder above the knee, pull out-of-gamut colours
-// toward their own grey, then encode for an SDR display.
+// put 100 nits at 1.0 as Resolve's Rec.709 output does, BT.2020 to BT.709
+// primaries, roll luminance off with BT.2390's EETF from 1000 nits, pull
+// out-of-gamut colours toward their own grey, then encode with gamma 2.4.
 
-const float KNEE = 0.6;
+const float SDR_WHITE = 100.0;
+const float PQ_PEAK = 0.7518271;    // Hdr.nitsToPq(SOURCE_PEAK_NITS)
+const float MAX_LUM = 0.6757916;    // nitsToPq(SDR_WHITE_NITS) / PQ_PEAK
+const float KS = 0.5136874;         // 1.5 · MAX_LUM − 0.5
+const float KNEE = 0.2785847;       // Hdr.KNEE
 
 vec3 pqToNits(vec3 e) {
     vec3 p = pow(clamp(e, 0.0, 1.0), vec3(1.0 / 78.84375));
     return pow(max(p - 0.8359375, 0.0) / (18.8515625 - 18.6875 * p), vec3(1.0 / 0.1593017578125)) * 10000.0;
+}
+
+float nitsToPq(float nits) {
+    float y = pow(clamp(nits / 10000.0, 0.0, 1.0), 0.1593017578125);
+    return pow((0.8359375 + 18.8515625 * y) / (1.0 + 18.6875 * y), 78.84375);
 }
 
 vec3 hlgToNits(vec3 e) {
@@ -90,8 +65,12 @@ vec3 hlgToNits(vec3 e) {
 
 float toneMap(float x) {
     if (x <= KNEE) return max(x, 0.0);
-    float t = (x - KNEE) / (1.0 - KNEE);
-    return KNEE + (1.0 - KNEE) * t / (1.0 + t);
+    float e = min(nitsToPq(x * SDR_WHITE) / PQ_PEAK, 1.0);
+    float t = (e - KS) / (1.0 - KS);
+    float t2 = t * t;
+    float t3 = t2 * t;
+    float p = (2.0 * t3 - 3.0 * t2 + 1.0) * KS + (t3 - 2.0 * t2 + t) * (1.0 - KS) + (-2.0 * t3 + 3.0 * t2) * MAX_LUM;
+    return min(pqToNits(vec3(p * PQ_PEAK)).x / SDR_WHITE, 1.0);
 }
 
 const mat3 BT2020_TO_709 = mat3(
@@ -100,7 +79,7 @@ const mat3 BT2020_TO_709 = mat3(
     -0.0728, -0.0083, 1.1187);
 
 vec3 toSdr(vec3 signal) {
-    vec3 lin = (uTransfer == 1 ? pqToNits(signal) : hlgToNits(signal)) / 203.0;
+    vec3 lin = (uTransfer == 1 ? pqToNits(signal) : hlgToNits(signal)) / SDR_WHITE;
     lin = BT2020_TO_709 * lin;
     float y = dot(lin, vec3(0.2126, 0.7152, 0.0722));
     if (y <= 0.0) return vec3(0.0);
@@ -115,18 +94,22 @@ vec3 toSdr(vec3 signal) {
     return pow(clamp(rgb, 0.0, 1.0), vec3(1.0 / 2.4));
 }
 
+// Half a code of noise, fixed per pixel, so the 8-bit display doesn't band
+// what the conversion and the noise reduction have made smooth.
+float dither() {
+    return (fract(52.9829189 * fract(dot(gl_FragCoord.xy, vec2(0.06711056, 0.00583715)))) - 0.5) / 255.0;
+}
+
 // Tool luma: the source's own Y', expanded to 0 = black, 1 = white.
 float luma(vec2 uv) {
-    return (texture(uY, uv).r - uOffset.x) * uScale.x;
+    return ((uClean ? texture(uCleaned, uv).r : texture(uY, uv).r) - uOffset.x) * uScale.x;
 }
 
 void main() {
     vec2 uv = uCrop.xy + vUv * uCrop.zw;
-    vec3 yuv = vec3(texture(uY, uv).r, texture(uCb, uv).r, texture(uCr, uv).r);
-    if (uDenoise > 0.0) {
-        yuv.x = smoothLuma(uv, yuv.x);
-        yuv.yz = smoothChroma(uv);
-    }
+    vec3 yuv = uClean
+        ? texture(uCleaned, uv).rgb
+        : vec3(texture(uY, uv).r, texture(uCb, uv).r, texture(uCr, uv).r);
     vec3 rgb = uYuvToRgb * ((yuv - uOffset) * uScale);
     // The tools read the picture as shown, so their levels mean what they do for normal footage.
     float l = (yuv.x - uOffset.x) * uScale.x;
@@ -134,6 +117,7 @@ void main() {
         rgb = toSdr(rgb);
         l = dot(rgb, vec3(0.2126, 0.7152, 0.0722));
     }
+    if (uTransfer != 0 || uClean) rgb += dither();
 
     if (uFalseColor) {
         float t = clamp(l, 0.0, 1.0);

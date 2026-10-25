@@ -246,10 +246,11 @@ private fun SourceSettings(
 ) {
     ToolBlock(
         "Picture",
-        "Set Signal to what the camera records. In HDR PQ or HLG, Link Cam shows the footage as normal video looks: " +
-            "full colour, with the highlights rolled off. A capture dongle can't tell Link Cam this itself. " +
-            "Both settings change only what this screen shows, never the recording; leave noise reduction off " +
-            "to judge how noisy the footage really is.",
+        "Set Signal to what the camera records. In HDR PQ or HLG, Link Cam shows the footage the way DaVinci Resolve " +
+            "turns it into Rec.709: 100 nits as white, highlights rolled off from 1000 nits. A capture dongle can't tell " +
+            "Link Cam this itself. Noise reduction averages still parts of the picture over several frames and smooths " +
+            "moving parts. Both settings change only what this screen shows, never the recording; leave noise reduction " +
+            "off to judge how noisy the footage really is.",
     ) {
         OptionGroup("Signal", Transfer.entries.map { it to it.label }, tools.signal, { v -> toolsManager.update { it.copy(signal = v) } })
         OptionGroup(

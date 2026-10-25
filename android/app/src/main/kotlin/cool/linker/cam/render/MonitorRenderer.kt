@@ -5,6 +5,7 @@ import android.opengl.GLES30
 import android.opengl.GLSurfaceView
 import android.util.Log
 import cool.linker.cam.model.ColorSpec
+import cool.linker.cam.model.NoiseReduction
 import cool.linker.cam.model.Transfer
 import cool.linker.cam.source.FrameInfo
 import cool.linker.cam.source.FrameSource
@@ -29,6 +30,10 @@ import javax.microedition.khronos.opengles.GL10
  * frame once, and draws it through `monitor.frag`. The picture is fitted to
  * the view with a black surround; the Compose overlays use the same fit from
  * [Guides.fit], so the frame lines land on the picture.
+ *
+ * With noise reduction on, each new frame first goes through `denoise.frag`,
+ * which blends it into a cleaned copy kept from frame to frame (two textures,
+ * read one and write the other), and the display pass reads that copy.
  *
  * When the scope is on, it also samples the frame's luma a few times a second
  * for [scopes]. The read goes through a pixel buffer and is collected one tick
@@ -64,6 +69,16 @@ class MonitorRenderer(private val assets: AssetManager) : GLSurfaceView.Renderer
     private var scopeNext = 0
     private var scopeLastNanos = 0L
     private val scopeCodes = ByteArray(Scopes.GRID_WIDTH * Scopes.GRID_HEIGHT)
+
+    private var denoiseProgram = 0
+    private val d = DenoiseUniforms()
+    private val cleaned = IntArray(2)
+    private val cleanedFbos = IntArray(2)
+    private val cleanedSize = IntArray(2)
+    private var cleanedFormat = 0
+    private var cleanedCurrent = 0
+    private var cleanedValid = false
+    private var cleanedSource: FrameSource? = null
 
     @Volatile private var snapshotRequest: CompletableDeferred<Luma?>? = null
     private var snapshotFbo = 0
@@ -105,6 +120,12 @@ class MonitorRenderer(private val assets: AssetManager) : GLSurfaceView.Renderer
         GLES30.glBindVertexArray(vao[0])
 
         createScope()
+        denoiseProgram = buildProgram(readAsset("shaders/monitor.vert"), readAsset("shaders/denoise.frag"))
+        d.locate(denoiseProgram)
+        cleaned.fill(0)
+        cleanedFbos.fill(0)
+        cleanedSize.fill(0)
+        cleanedValid = false
         snapshotFbo = 0
         snapshotSize.fill(0)
     }
@@ -154,6 +175,10 @@ class MonitorRenderer(private val assets: AssetManager) : GLSurfaceView.Renderer
             fresh = true
             account(frame)
         }
+        val t = tools
+        val clean = t.noiseReduction != NoiseReduction.OFF && hasFrame && src != null
+        if (!clean) cleanedValid = false
+        else if (fresh) denoisePass(src!!, t.noiseReduction)
 
         GLES30.glViewport(0, 0, viewWidth, viewHeight)
         GLES30.glClearColor(0f, 0f, 0f, 1f)
@@ -167,7 +192,6 @@ class MonitorRenderer(private val assets: AssetManager) : GLSurfaceView.Renderer
             fit.left.toInt(), (viewHeight - fit.bottom).toInt(), fit.width.toInt(), fit.height.toInt(),
         )
 
-        val t = tools
         val c = effectiveSpec(t).shaderConstants()
         GLES30.glUseProgram(program)
         bind(0, planes[0], u.y)
@@ -182,9 +206,10 @@ class MonitorRenderer(private val assets: AssetManager) : GLSurfaceView.Renderer
         if (t.punchIn) GLES30.glUniform4f(u.crop, 0.25f, 0.25f, 0.5f, 0.5f)
         else GLES30.glUniform4f(u.crop, 0f, 0f, 1f, 1f)
         GLES30.glUniform2f(u.lumaTexel, 1f / planeSize[0][0], 1f / planeSize[0][1])
-        GLES30.glUniform2f(u.chromaTexel, 1f / planeSize[1][0], 1f / planeSize[1][1])
         GLES30.glUniform1i(u.transfer, t.signal.ordinal)
-        GLES30.glUniform1f(u.denoise, t.noiseReduction.rangeWeight)
+        val showCleaned = clean && cleanedValid
+        GLES30.glUniform1i(u.clean, if (showCleaned) 1 else 0)
+        bind(4, if (showCleaned) cleaned[cleanedCurrent] else planes[0], u.cleaned)
 
         GLES30.glUniform1i(u.falseColor, if (t.falseColor) 1 else 0)
         GLES30.glUniform1f(u.zebraLevel, if (t.zebras) t.zebraLevel / 100f else 2f)
@@ -206,6 +231,80 @@ class MonitorRenderer(private val assets: AssetManager) : GLSurfaceView.Renderer
             snapshotRequest = null
             request.complete(snapshotPass())
         }
+    }
+
+    /**
+     * Blends the frame just uploaded into the cleaned copy. The history starts
+     * afresh when the source, its size or the setting's first frame changes.
+     */
+    private fun denoisePass(src: FrameSource, nr: NoiseReduction) {
+        val width = planeSize[0][0]
+        val height = planeSize[0][1]
+        if (cleanedFbos[0] == 0 || cleanedSize[0] != width || cleanedSize[1] != height) {
+            allocateCleaned(width, height)
+            cleanedValid = false
+        }
+        if (src !== cleanedSource) {
+            cleanedSource = src
+            cleanedValid = false
+        }
+        val previous = cleanedCurrent
+        val next = 1 - previous
+        GLES30.glBindFramebuffer(GLES30.GL_FRAMEBUFFER, cleanedFbos[next])
+        GLES30.glViewport(0, 0, width, height)
+        GLES30.glUseProgram(denoiseProgram)
+        bind(0, planes[0], d.y)
+        bind(1, planes[1], d.cb)
+        bind(2, planes[2], d.cr)
+        bind(3, cleaned[previous], d.history)
+        GLES30.glUniform2f(d.lumaTexel, 1f / width, 1f / height)
+        GLES30.glUniform2f(d.chromaTexel, 1f / planeSize[1][0], 1f / planeSize[1][1])
+        GLES30.glUniform1f(d.keep, if (cleanedValid) nr.keep else 0f)
+        GLES30.glUniform1f(d.noise, nr.noise)
+        GLES30.glDrawArrays(GLES30.GL_TRIANGLES, 0, 3)
+        GLES30.glBindFramebuffer(GLES30.GL_FRAMEBUFFER, 0)
+        cleanedCurrent = next
+        cleanedValid = true
+    }
+
+    /**
+     * The two history textures. Half float keeps the fractions of a code that
+     * averaging frames produces; a GPU that can't render to it gets 10-bit,
+     * which every GLES 3 GPU can.
+     */
+    private fun allocateCleaned(width: Int, height: Int) {
+        if (cleanedFbos[0] != 0) {
+            GLES30.glDeleteFramebuffers(2, cleanedFbos, 0)
+            GLES30.glDeleteTextures(2, cleaned, 0)
+        }
+        GLES30.glGenTextures(2, cleaned, 0)
+        GLES30.glGenFramebuffers(2, cleanedFbos, 0)
+        val formats = if (cleanedFormat != 0) intArrayOf(cleanedFormat) else intArrayOf(GLES30.GL_RGBA16F, GLES30.GL_RGB10_A2)
+        for (format in formats) {
+            var complete = true
+            for (i in 0..1) {
+                configureTexture(cleaned[i], GLES30.GL_LINEAR)
+                if (format == GLES30.GL_RGBA16F) {
+                    GLES30.glTexImage2D(GLES30.GL_TEXTURE_2D, 0, format, width, height, 0, GLES30.GL_RGBA, GLES30.GL_HALF_FLOAT, null)
+                } else {
+                    GLES30.glTexImage2D(
+                        GLES30.GL_TEXTURE_2D, 0, format, width, height, 0,
+                        GLES30.GL_RGBA, GLES30.GL_UNSIGNED_INT_2_10_10_10_REV, null,
+                    )
+                }
+                GLES30.glBindFramebuffer(GLES30.GL_FRAMEBUFFER, cleanedFbos[i])
+                GLES30.glFramebufferTexture2D(GLES30.GL_FRAMEBUFFER, GLES30.GL_COLOR_ATTACHMENT0, GLES30.GL_TEXTURE_2D, cleaned[i], 0)
+                complete = complete && GLES30.glCheckFramebufferStatus(GLES30.GL_FRAMEBUFFER) == GLES30.GL_FRAMEBUFFER_COMPLETE
+            }
+            GLES30.glBindFramebuffer(GLES30.GL_FRAMEBUFFER, 0)
+            if (complete) {
+                cleanedFormat = format
+                break
+            }
+            Log.w(TAG, "noise reduction can't render to 0x%x".format(format))
+        }
+        cleanedSize[0] = width
+        cleanedSize[1] = height
     }
 
     /**
@@ -358,17 +457,29 @@ class MonitorRenderer(private val assets: AssetManager) : GLSurfaceView.Renderer
     private class Uniforms {
         var y = 0; var cb = 0; var cr = 0; var ramp = 0
         var yuvToRgb = 0; var offset = 0; var scale = 0
-        var crop = 0; var lumaTexel = 0; var chromaTexel = 0; var transfer = 0; var denoise = 0
+        var crop = 0; var lumaTexel = 0; var transfer = 0; var clean = 0; var cleaned = 0
         var falseColor = 0; var zebraLevel = 0; var peakThreshold = 0; var peakColor = 0; var time = 0
 
         fun locate(p: Int) {
             fun at(name: String) = GLES30.glGetUniformLocation(p, name)
             y = at("uY"); cb = at("uCb"); cr = at("uCr"); ramp = at("uRamp")
             yuvToRgb = at("uYuvToRgb"); offset = at("uOffset"); scale = at("uScale")
-            crop = at("uCrop"); lumaTexel = at("uLumaTexel"); chromaTexel = at("uChromaTexel")
-            transfer = at("uTransfer"); denoise = at("uDenoise")
+            crop = at("uCrop"); lumaTexel = at("uLumaTexel")
+            transfer = at("uTransfer"); clean = at("uClean"); cleaned = at("uCleaned")
             falseColor = at("uFalseColor"); zebraLevel = at("uZebraLevel")
             peakThreshold = at("uPeakThreshold"); peakColor = at("uPeakColor"); time = at("uTime")
+        }
+    }
+
+    private class DenoiseUniforms {
+        var y = 0; var cb = 0; var cr = 0; var history = 0
+        var lumaTexel = 0; var chromaTexel = 0; var keep = 0; var noise = 0
+
+        fun locate(p: Int) {
+            fun at(name: String) = GLES30.glGetUniformLocation(p, name)
+            y = at("uY"); cb = at("uCb"); cr = at("uCr"); history = at("uHistory")
+            lumaTexel = at("uLumaTexel"); chromaTexel = at("uChromaTexel")
+            keep = at("uKeep"); noise = at("uNoise")
         }
     }
 
