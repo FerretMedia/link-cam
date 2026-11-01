@@ -41,6 +41,8 @@ object LcSize {
 object LcType {
     private const val TABULAR = "tnum"
 
+    /** The one big line on the arrival screen. */
+    val Display = TextStyle(color = LcColors.Paper, fontSize = 36.sp, lineHeight = 40.sp, fontWeight = FontWeight.SemiBold, letterSpacing = (-0.9).sp)
     val Title = TextStyle(color = LcColors.Paper, fontSize = 24.sp, fontWeight = FontWeight.SemiBold, letterSpacing = (-0.3).sp)
     val Body = TextStyle(color = LcColors.Muted, fontSize = 15.sp, lineHeight = 22.sp)
     val Label = TextStyle(color = LcColors.Paper, fontSize = 14.sp, fontWeight = FontWeight.Medium)

@@ -128,6 +128,9 @@ class CameraLink(context: Context, private val store: SettingsStore) {
     /** The password last paired from the camera's screen: each is tried once, so a misreading can't loop. */
     @Volatile private var triedFromScreen: String? = null
 
+    /** Whether the app is on screen; out of it, the link stops looking for cameras that aren't around. */
+    @Volatile private var foreground = false
+
     private val _state = MutableStateFlow<CameraLinkState>(CameraLinkState.Off)
     val state: StateFlow<CameraLinkState> = _state.asStateFlow()
 
@@ -141,6 +144,7 @@ class CameraLink(context: Context, private val store: SettingsStore) {
 
     /** The app is in front: back to the cameras it knows, unless the user disconnected. */
     fun resume() {
+        foreground = true
         if (job?.isActive != true && autoConnect && CameraBook.quietOrder(cameras.value).isNotEmpty()) {
             start { reconnect(only = null) }
         }
@@ -152,6 +156,7 @@ class CameraLink(context: Context, private val store: SettingsStore) {
      * started.
      */
     fun pause() {
+        foreground = false
         val now = _state.value
         if (now is CameraLinkState.Waiting || (now is CameraLinkState.Searching && now.background)) {
             stop()
@@ -282,6 +287,7 @@ class CameraLink(context: Context, private val store: SettingsStore) {
     private inner class Attempt {
         @Volatile private var inFlight: HttpURLConnection? = null
         @Volatile private var eos: EosSession? = null
+        @Volatile private var closed = false
 
         private val isCurrent: Boolean get() = current === this
 
@@ -289,17 +295,37 @@ class CameraLink(context: Context, private val store: SettingsStore) {
             if (isCurrent) _state.value = state
         }
 
+        /**
+         * Ends the attempt's connection. Off the calling thread, which is
+         * usually the main one: closing a session tells the camera so over
+         * the network.
+         */
         fun close() {
-            inFlight?.disconnect()
-            eos?.close()
+            closed = true
+            scope.launch {
+                inFlight?.disconnect()
+                eos?.close()
+            }
         }
+
+        /**
+         * [camera]'s last state if it dropped and is being got back, so its
+         * readout stays up, greyed, instead of vanishing until it's back.
+         */
+        private fun dropped(camera: String?): CameraLinkState.Reconnecting? =
+            (_state.value as? CameraLinkState.Reconnecting)?.takeIf { camera != null && it.camera == camera }
 
         /**
          * Tries [only], or with nobody waiting every saved camera that
          * rejoins without asking, newest first. When one drops, starts over at
-         * once; while none is around, looks again every few seconds.
+         * once; while none is around, looks again every few seconds, as long
+         * as the app is on screen.
+         *
+         * [only] is tried once if it never answers, so the user hears it isn't
+         * there; once it has connected, a drop is waited out like any other.
          */
         suspend fun reconnect(only: SavedCamera?) {
+            var keepAt = only == null
             while (currentCoroutineContext().isActive) {
                 val order = only?.let(::listOf) ?: CameraBook.quietOrder(cameras.value)
                 if (order.isEmpty()) {
@@ -308,34 +334,48 @@ class CameraLink(context: Context, private val store: SettingsStore) {
                 }
                 var dropped = false
                 for (camera in order) {
-                    if (reach(camera, quiet = only == null) == Outcome.LOST) {
+                    if (reach(camera, quiet = keepAt) == Outcome.LOST) {
                         dropped = true
                         break
                     }
                 }
-                if (dropped) continue
-                if (only != null) {
+                if (dropped) {
+                    // A camera that asks the user each time it's joined isn't rejoined unasked.
+                    if (only?.reconnectsQuietly != false) keepAt = true
+                    continue
+                }
+                if (!keepAt) {
                     if (_state.value !is CameraLinkState.Failed) {
-                        set(CameraLinkState.Failed(notAround(only.name), retrying = false, step = LinkStep.WIFI, camera = only.id))
+                        set(CameraLinkState.Failed(notAround(only!!.name), retrying = false, step = LinkStep.WIFI, camera = only.id))
                     }
                     return
                 }
-                set(CameraLinkState.Waiting(waiting(order)))
                 network.releaseCameraWifi()
+                if (!foreground) {
+                    // Looking costs Wi-Fi scans; the app picks this up again when it's back on screen.
+                    Log.i(TAG, "stopped looking for cameras with the app in the background")
+                    set(CameraLinkState.Off)
+                    return
+                }
+                set(CameraLinkState.Waiting(waiting(order)))
                 delay(ROUND_MS)
             }
         }
 
         /** Joins [camera]'s Wi-Fi if it has one, then goes straight to where it was, searching only if it's moved. */
         private suspend fun reach(camera: SavedCamera, quiet: Boolean): Outcome {
+            val keep = dropped(camera.id) != null
+            fun progress(state: CameraLinkState) {
+                if (!keep) set(state)
+            }
             val wifi = camera.wifi
             val joined = if (wifi == null) {
                 null
             } else {
-                set(CameraLinkState.Searching(joiningCamera(camera.name), LinkStep.WIFI, camera.id, background = quiet))
+                progress(CameraLinkState.Searching(joiningCamera(camera.name), LinkStep.WIFI, camera.id, background = quiet))
                 network.joinCameraWifi(wifi, if (quiet) QUIET_JOIN_MS else JOIN_MS) ?: return Outcome.UNREACHED
             }
-            set(CameraLinkState.Searching(reaching(camera.name), LinkStep.FIND, camera.id, background = quiet))
+            progress(CameraLinkState.Searching(reaching(camera.name), LinkStep.FIND, camera.id, background = quiet))
             // No search and no probe first: a camera takes a moment to get over a probe.
             camera.endpoint?.let { saved ->
                 val outcome = run(saved, camera, wifi, joined)
@@ -462,8 +502,12 @@ class CameraLink(context: Context, private val store: SettingsStore) {
             shortFirstHello: Boolean,
         ): Outcome {
             var live: SavedCamera? = null
-            var settings = CameraSettings()
+            // Back after a drop: the last settings stay up until the camera sends its own.
+            val carried = dropped(known?.id)
+            var settings = carried?.settings ?: CameraSettings()
             var failures = 0
+            fun notYet(reason: String) =
+                set(carried?.copy(reason = reason) ?: CameraLinkState.Failed(reason, retrying = true, camera = known?.id))
             // A camera meeting Link Cam for the first time holds its answer and shows "Start EOS
             // Utility on the computer", then lets the same phone in on a later try. So a first hello
             // gets a few seconds before trying again, and the next the time to walk to the camera.
@@ -471,10 +515,15 @@ class CameraLink(context: Context, private val store: SettingsStore) {
             while (currentCoroutineContext().isActive) {
                 val session = EosSession(network, endpoint.host, store.clientGuid(), CLIENT_NAME)
                 eos = session
+                // Stopped between the loop's check and here: close() may have missed this session.
+                if (closed) {
+                    session.close()
+                    break
+                }
                 try {
                     whileOn(joined, session) {
                         session.run(
-                            onWaiting = { if (live == null) set(CameraLinkState.Connecting(APPROVE, camera = known?.id)) },
+                            onWaiting = { if (live == null && carried == null) set(CameraLinkState.Connecting(APPROVE, camera = known?.id)) },
                             onConnected = { identity ->
                                 val camera = remember(identity, wifi, endpoint)
                                 live = camera
@@ -503,7 +552,7 @@ class CameraLink(context: Context, private val store: SettingsStore) {
                     }
                     if (live == null) {
                         Log.i(TAG, "the camera held the hello")
-                        set(CameraLinkState.Failed(NO_HELLO, retrying = true, camera = known?.id))
+                        notYet(NO_HELLO)
                         return Outcome.UNREACHED
                     }
                 } catch (e: EosSession.Refused) {
@@ -520,7 +569,7 @@ class CameraLink(context: Context, private val store: SettingsStore) {
                     if (camera != null) {
                         set(CameraLinkState.Reconnecting(camera.name, settings, reason, camera.id))
                     } else {
-                        set(CameraLinkState.Failed(reason, retrying = true, camera = known?.id))
+                        notYet(reason)
                         if (++failures >= HELLO_ATTEMPTS) return Outcome.UNREACHED
                     }
                 } finally {
@@ -666,6 +715,7 @@ class CameraLink(context: Context, private val store: SettingsStore) {
 
     private fun describe(e: IOException): String = when (e) {
         is EosSession.Refused -> "The camera turned the connection down. Choose OK when the camera asks about Link Cam."
+        is EosSession.Busy -> "The camera is connected to something else. Close EOS Utility or other camera apps."
         is HttpStatusException -> when (e.code) {
             401, 403 -> "The camera refused the connection. Check Camera Control API is on."
             503 -> "The camera is busy. Close other apps connected to it."

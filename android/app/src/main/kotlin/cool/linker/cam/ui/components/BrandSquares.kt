@@ -69,15 +69,16 @@ fun BrandSquares(modifier: Modifier = Modifier) {
     ) {
         val w = maxWidth
         val h = maxHeight
-        val wide = w > 600.dp
-        // x, y, width, height and colour, after BrandBlobs. On a narrow screen
-        // only a strip of one square shows at each edge.
-        val squares = buildList {
-            add(Square(-w * 0.12f, -h * 0.06f, if (wide) 380.dp else 190.dp, if (wide) 260.dp else 150.dp, LcColors.Brand, 0))
-            if (wide) add(Square(-w * 0.14f, h * 0.62f, 260.dp, 300.dp, LcColors.Brand, 1))
-            add(Square(w - (if (wide) 340.dp else 180.dp) + w * 0.07f, h * 0.14f, if (wide) 340.dp else 180.dp, if (wide) 220.dp else 140.dp, LcColors.Crimson, 2))
-            if (wide) add(Square(w - 400.dp + w * 0.05f, h * 0.84f, 400.dp, 280.dp, LcColors.Crimson, 3))
-        }
+        // Sized from the short side, so a phone held sideways, about 410 dp
+        // tall, gets corners of colour rather than walls of it. x, y, width,
+        // height and colour, after BrandBlobs; each square is mostly off screen.
+        val u = minOf(w, h)
+        val squares = listOf(
+            Square(-u * 0.22f, -u * 0.14f, u * 0.62f, u * 0.40f, LcColors.Brand, 0),
+            Square(-u * 0.30f, h - u * 0.26f, u * 0.52f, u * 0.46f, LcColors.Brand, 1),
+            Square(w - u * 0.30f, u * 0.08f, u * 0.44f, u * 0.30f, LcColors.Crimson, 2),
+            Square(w - u * 0.46f, h - u * 0.20f, u * 0.70f, u * 0.44f, LcColors.Crimson, 3),
+        )
         val transition = rememberInfiniteTransition(label = "drift")
         for (s in squares) {
             val drift by transition.animateFloat(
@@ -102,7 +103,7 @@ fun BrandSquares(modifier: Modifier = Modifier) {
             )
         }
         Canvas(Modifier.fillMaxSize()) {
-            drawRect(grain, alpha = 0.7f, blendMode = BlendMode.Overlay)
+            drawRect(grain, alpha = 0.4f, blendMode = BlendMode.Overlay)
         }
     }
 }
