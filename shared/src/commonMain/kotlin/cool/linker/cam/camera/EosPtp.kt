@@ -103,6 +103,14 @@ object EosPtp {
         return InitAck(connection, name)
     }
 
+    /** Why a camera turned a connection down, from PTP/IP's InitFail. */
+    object InitFailReason {
+        const val REJECTED = 1
+
+        /** It has a session with someone already, or is still letting go of one. */
+        const val BUSY = 2
+    }
+
     /** The reason code in an InitFail. */
     fun parseInitFail(payload: ByteArray): Int = if (payload.size >= 4) readU32(payload, 0) else 0
 

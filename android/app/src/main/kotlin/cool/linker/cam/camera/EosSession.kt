@@ -12,7 +12,9 @@ import java.net.Socket
  * sockets and the order things happen in.
  *
  * Blocking, for a background thread. [close] from any thread ends it: the
- * blocked read throws and [run] returns through its IOException.
+ * blocked read throws and [run] returns through its IOException. That holds
+ * even while a socket is still connecting: a session closed then must not
+ * carry on and hold the camera, which takes one session at a time.
  */
 class EosSession(
     private val network: CameraNetwork,
@@ -20,9 +22,10 @@ class EosSession(
     private val guid: ByteArray,
     private val clientName: String,
 ) {
-    private var command: Socket? = null
-    private var events: Socket? = null
+    @Volatile private var command: Socket? = null
+    @Volatile private var events: Socket? = null
     @Volatile private var closed = false
+    @Volatile private var opened = false
 
     /** How far the handshake got, for the log when a camera turns us away. */
     @Volatile var stage = STAGE_CONNECTING
@@ -30,6 +33,9 @@ class EosSession(
     private var transaction = 0
 
     class Refused(val reason: Int) : IOException("camera refused the connection (0x%x)".format(reason))
+
+    /** The camera has another session, or hasn't let go of the last one yet: worth another try. */
+    class Busy : IOException("camera busy with another connection")
 
     /** The camera kept quiet after hello: a body meeting Link Cam for the first time does that. */
     class Unanswered : IOException("no answer to InitCommandRequest")
@@ -47,6 +53,8 @@ class EosSession(
     ) {
         try {
             val cmd = network.socket(host, EosPtp.PORT, CONNECT_TIMEOUT_MS).also { command = it }
+            // Closed while connecting: close() may have looked before the socket was there.
+            if (closed) throw IOException("closed")
             val cmdIn = DataInputStream(cmd.getInputStream().buffered())
             val cmdOut = cmd.getOutputStream()
 
@@ -62,7 +70,10 @@ class EosSession(
             }
             when (ack.type) {
                 EosPtp.Packet.INIT_COMMAND_ACK -> Unit
-                EosPtp.Packet.INIT_FAIL -> throw Refused(EosPtp.parseInitFail(ack.payload))
+                EosPtp.Packet.INIT_FAIL -> {
+                    val reason = EosPtp.parseInitFail(ack.payload)
+                    throw if (reason == EosPtp.InitFailReason.BUSY) Busy() else Refused(reason)
+                }
                 else -> throw IOException("unexpected packet ${ack.type} instead of InitCommandAck")
             }
             val init = EosPtp.parseInitAck(ack.payload)
@@ -70,6 +81,7 @@ class EosSession(
 
             stage = "init event"
             val evt = network.socket(host, EosPtp.PORT, CONNECT_TIMEOUT_MS).also { events = it }
+            if (closed) throw IOException("closed")
             evt.soTimeout = READ_TIMEOUT_MS
             val evtIn = DataInputStream(evt.getInputStream().buffered())
             val evtOut = evt.getOutputStream()
@@ -80,6 +92,7 @@ class EosSession(
 
             stage = "open session"
             transact(cmdIn, cmdOut, EosPtp.Op.OPEN_SESSION, 1, okAlso = EosPtp.Response.SESSION_ALREADY_OPEN)
+            opened = true
             stage = "remote mode"
             // What the camera can do depends on its Wi-Fi mode, so ask rather than assume.
             val info = runCatching {
@@ -142,6 +155,10 @@ class EosSession(
                                 changes.joinToString { "%x=%x".format(it.prop, it.value) })
                         }
                         if (changes.isNotEmpty()) report(EosPtp.apply(changes, settings))
+                    } else if (code == EosPtp.Response.DEVICE_BUSY) {
+                        // Busy in a menu or while writing a file. Asking setting by setting wouldn't help:
+                        // Canon refuses that, and the readout would freeze until the link restarted.
+                        Thread.sleep(BUSY_BACKOFF_MS)
                     } else if (++eventFailures >= EVENT_FAILURES_BEFORE_POLLING) {
                         Log.w(TAG, "GetEventData keeps answering 0x%x; asking for each setting instead".format(code))
                         useEvents = false
@@ -162,12 +179,15 @@ class EosSession(
         }
     }
 
+    /** Ends the session. Safe to call more than once, from any thread; the sockets close every time. */
     fun close() {
-        if (closed) return
+        val first = !closed
         closed = true
-        // A polite CloseSession if we can; the sockets go either way.
-        runCatching {
-            command?.getOutputStream()?.send(EosPtp.operation(EosPtp.Op.CLOSE_SESSION, ++transaction))
+        // A polite CloseSession if a session was opened; the sockets go either way.
+        if (first && opened) {
+            runCatching {
+                command?.getOutputStream()?.send(EosPtp.operation(EosPtp.Op.CLOSE_SESSION, ++transaction))
+            }
         }
         runCatching { events?.close() }
         runCatching { command?.close() }
@@ -257,6 +277,7 @@ class EosSession(
         private const val BUSY_RETRIES = 5
         private const val EVENT_FAILURES_BEFORE_POLLING = 5
         private const val PROP_POLL_MS = 500L
+        private const val BUSY_BACKOFF_MS = 300L
 
         /** A battery drains over minutes; twice a minute keeps it current without crowding the link. */
         private const val BATTERY_POLL_MS = 30_000L
