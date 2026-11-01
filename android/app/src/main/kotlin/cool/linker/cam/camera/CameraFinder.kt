@@ -48,7 +48,10 @@ import kotlin.coroutines.resume
  */
 class CameraNetwork(context: Context) {
     private val connectivity = context.getSystemService(ConnectivityManager::class.java)
-    private var request: ConnectivityManager.NetworkCallback? = null
+    @Volatile private var request: ConnectivityManager.NetworkCallback? = null
+
+    /** What [request] asked for. */
+    private var requested: CameraWifi? = null
 
     private val held = MutableStateFlow<Network?>(null)
 
@@ -73,8 +76,15 @@ class CameraNetwork(context: Context) {
      *
      * Null if the user declined, the password was wrong or the camera's
      * Wi-Fi wasn't in range within [timeoutMs].
+     *
+     * Already on that Wi-Fi, it stays: asking again would take the phone off
+     * it and back on, which the camera takes as the phone leaving.
      */
     suspend fun joinCameraWifi(wifi: CameraWifi, timeoutMs: Int = JOIN_TIMEOUT_MS): Network? {
+        synchronized(this) {
+            val on = held.value
+            if (on != null && requested == wifi) return on
+        }
         releaseCameraWifi()
         val specifier = try {
             WifiNetworkSpecifier.Builder()
@@ -97,6 +107,8 @@ class CameraNetwork(context: Context) {
         return suspendCancellableCoroutine { cont ->
             val callback = object : ConnectivityManager.NetworkCallback() {
                 override fun onAvailable(network: Network) {
+                    // A request already let go of can still have a callback on its way.
+                    if (request !== this) return
                     held.value = network
                     if (cont.isActive) cont.resume(network)
                 }
@@ -106,19 +118,24 @@ class CameraNetwork(context: Context) {
                 }
 
                 override fun onLost(network: Network) {
-                    held.compareAndSet(network, null)
+                    if (request === this) held.compareAndSet(network, null)
                 }
             }
-            request = callback
+            synchronized(this) {
+                request = callback
+                requested = wifi
+            }
             connectivity.requestNetwork(wanted, callback, timeoutMs)
             cont.invokeOnCancellation { if (cameraWifi == null) releaseCameraWifi() }
         }
     }
 
     /** Lets go of the camera's Wi-Fi, so the phone goes back to its usual network. */
+    @Synchronized
     fun releaseCameraWifi() {
         request?.let { runCatching { connectivity.unregisterNetworkCallback(it) } }
         request = null
+        requested = null
         held.value = null
     }
 
