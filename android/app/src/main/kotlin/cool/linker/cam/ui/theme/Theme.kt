@@ -31,6 +31,7 @@ object LcSize {
     val RadiusChip = Tokens.Size.RADIUS_CHIP.dp
     val HitTarget = Tokens.Size.HIT_TARGET.dp
     val Rail = Tokens.Size.RAIL.dp
+    val RailItem = Tokens.Size.RAIL_ITEM.dp
 }
 
 /**
@@ -40,11 +41,14 @@ object LcSize {
 object LcType {
     private const val TABULAR = "tnum"
 
+    /** The one big line on the arrival screen. */
+    val Display = TextStyle(color = LcColors.Paper, fontSize = 36.sp, lineHeight = 40.sp, fontWeight = FontWeight.SemiBold, letterSpacing = (-0.9).sp)
     val Title = TextStyle(color = LcColors.Paper, fontSize = 24.sp, fontWeight = FontWeight.SemiBold, letterSpacing = (-0.3).sp)
     val Body = TextStyle(color = LcColors.Muted, fontSize = 15.sp, lineHeight = 22.sp)
     val Label = TextStyle(color = LcColors.Paper, fontSize = 14.sp, fontWeight = FontWeight.Medium)
     val Toggle = TextStyle(fontSize = 12.sp, fontWeight = FontWeight.SemiBold, letterSpacing = 0.4.sp, fontFeatureSettings = TABULAR)
     val Readout = TextStyle(color = LcColors.Paper, fontSize = 12.sp, fontFeatureSettings = TABULAR)
+    val CameraValue = TextStyle(color = LcColors.Paper, fontSize = 15.sp, fontWeight = FontWeight.SemiBold, fontFeatureSettings = TABULAR)
     val Legend = TextStyle(color = LcColors.Muted, fontSize = 12.sp, fontWeight = FontWeight.Medium, letterSpacing = 0.6.sp)
 }
 

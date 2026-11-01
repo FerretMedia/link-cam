@@ -36,6 +36,13 @@ object Tokens {
         const val RADIUS_CHIP = 6f
         const val HIT_TARGET = 48f
         const val RAIL = 64f
+
+        /**
+         * How tall a tool on the rail is. Below the 48 of a hit target: nine
+         * tools have to fit down a phone held sideways, about 410 dp, without
+         * scrolling.
+         */
+        const val RAIL_ITEM = 44f
     }
 
     object Motion {

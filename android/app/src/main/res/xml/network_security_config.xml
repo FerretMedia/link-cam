@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Canon's Camera Control API is plain HTTP on the local network, at whatever
+     address the camera was given, so cleartext can't be limited to a domain.
+     The only traffic Link Cam makes is to the camera the user points it at. -->
+<network-security-config>
+    <base-config cleartextTrafficPermitted="true" />
+</network-security-config>

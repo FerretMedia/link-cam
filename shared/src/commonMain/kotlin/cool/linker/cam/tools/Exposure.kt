@@ -8,6 +8,12 @@ package cool.linker.cam.tools
  * Levels are in IRE: 0 is black and 100 is white, on the source's own luma.
  */
 object Exposure {
+    /** Below this a level counts as crushed: false color's black clip band, and the scopes' crush readout. */
+    const val CRUSH_IRE = 2.5f
+
+    /** At and above this a level counts as clipped. */
+    const val CLIP_IRE = 99f
+
     fun ire(luma: Float): Float = luma * 100f
 }
 
@@ -24,12 +30,12 @@ object FalseColor {
     data class Band(val fromIre: Float, val toIre: Float, val rgb: Int, val name: String)
 
     val bands = listOf(
-        Band(Float.NEGATIVE_INFINITY, 2.5f, 0x8A2BE2, "Black clip"),
-        Band(2.5f, 4f, 0x2A6BFF, "Near black"),
+        Band(Float.NEGATIVE_INFINITY, Exposure.CRUSH_IRE, 0x8A2BE2, "Black clip"),
+        Band(Exposure.CRUSH_IRE, 4f, 0x2A6BFF, "Near black"),
         Band(38f, 42f, 0x27C93F, "18% grey"),
         Band(52f, 56f, 0xFF7EB6, "Skin, +1 stop"),
-        Band(97f, 99f, 0xFFE11A, "Near clip"),
-        Band(99f, Float.POSITIVE_INFINITY, 0xFF2A2A, "Clip"),
+        Band(97f, Exposure.CLIP_IRE, 0xFFE11A, "Near clip"),
+        Band(Exposure.CLIP_IRE, Float.POSITIVE_INFINITY, 0xFF2A2A, "Clip"),
     )
 
     /** Colour for a level, as 0xRRGGBB. Outside the bands, a grey of the same level. */

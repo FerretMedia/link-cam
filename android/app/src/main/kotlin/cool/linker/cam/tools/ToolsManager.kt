@@ -17,11 +17,20 @@ class ToolsManager(private val store: SettingsStore) {
     fun toggleGuides() = change { it.copy(guides = !it.guides) }
     fun toggleSafeAreas() = change { it.copy(safeAreas = !it.safeAreas) }
     fun togglePunchIn() = change { it.copy(punchIn = !it.punchIn) }
+    fun toggleScope() = change { it.copy(scope = !it.scope) }
 
     fun setZebraLevel(level: Int) = change { it.copy(zebraLevel = level, zebras = true) }
     fun setPeakingColor(color: PeakingColor) = change { it.copy(peakingColor = color, peaking = true) }
     fun setPeakingSensitivity(s: PeakingSensitivity) = change { it.copy(peakingSensitivity = s, peaking = true) }
+    fun setScopeKind(kind: ScopeKind) = change { it.copy(scopeKind = kind, scope = true) }
     fun setGuideAspect(aspect: GuideAspect) = change { it.copy(guideAspect = aspect, guides = true) }
+
+    /**
+     * Sets exactly what's chosen, as the settings screen does. The rail's
+     * sheets go through the setters above instead, which also switch the
+     * tool on, since a sheet is opened to use the tool.
+     */
+    fun update(transform: (ToolState) -> ToolState) = change(transform)
 
     private fun change(transform: (ToolState) -> ToolState) {
         _state.update(transform)
