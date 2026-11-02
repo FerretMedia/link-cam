@@ -57,11 +57,20 @@ object EosPtp {
         const val ISO = 0xD103
         const val EXPOSURE_COMP = 0xD104
 
+        /** Canon's own battery level, in a few steps. It's in the change events, unlike [BATTERY_LEVEL]. */
+        const val BATTERY_POWER = 0xD111
+
         /** The standard PTP battery level. Canon answers it when asked, not in its change events. */
         const val BATTERY_LEVEL = 0x5001
     }
 
     private const val EVENT_PROP_CHANGED = 0xC189
+
+    /** Canon's custom functions, sent whole in the first events and again whenever one changes. */
+    private const val CUSTOM_FUNCTIONS = 0xD1A0
+
+    /** The custom function holding what every button, dial and ring does. */
+    private const val CUSTOMIZE_CONTROLS = 0x070C
 
     /** PTP/IP 1.0, major version in the high half. */
     private const val PROTOCOL_VERSION = 0x00010000
@@ -246,6 +255,77 @@ object EosPtp {
         return out
     }
 
+    /**
+     * The custom functions in GetEventData's answer, function number to its
+     * values. Each comes in a property change of [CUSTOM_FUNCTIONS]: its size
+     * and a count of groups, then per group its number, size and a count of
+     * functions, each `[number][count][values…]`.
+     */
+    fun customFunctions(data: ByteArray): Map<Int, List<Int>> {
+        val out = mutableMapOf<Int, List<Int>>()
+        var at = 0
+        while (at + 8 <= data.size) {
+            val length = readU32(data, at)
+            val type = readU32(data, at + 4)
+            if (length < 8 || at + length > data.size || type == 0) break
+            if (type == EVENT_PROP_CHANGED && length >= 20 && readU32(data, at + 8) == CUSTOM_FUNCTIONS) {
+                readCustomFunctions(data, at + 12, at + length, out)
+            }
+            at += length
+        }
+        return out
+    }
+
+    private fun readCustomFunctions(data: ByteArray, start: Int, end: Int, out: MutableMap<Int, List<Int>>) {
+        var group = start + 8
+        repeat(readU32(data, start + 4)) {
+            if (group + 12 > end) return
+            val size = readU32(data, group + 4)
+            var at = group + 12
+            repeat(readU32(data, group + 8)) {
+                if (at + 8 > end) return
+                val count = readU32(data, at + 4)
+                if (count < 0 || at + 8 + 4L * count > end) return
+                out[readU32(data, at)] = List(count) { readU32(data, at + 8 + 4 * it) }
+                at += 8 + 4 * count
+            }
+            // A group's size counts from its size field on.
+            group += 4 + size
+        }
+    }
+
+    /**
+     * What turns shutter speed, aperture and ISO, from the custom functions;
+     * null if they don't say. Read off an R10 by changing its Customize dials
+     * menu and watching what changed: each control has a place in the table
+     * and its own numbers for what it does. A number not known here leaves
+     * that control out rather than guess.
+     */
+    fun controls(functions: Map<Int, List<Int>>): CameraSettings.Controls? {
+        val table = functions[CUSTOMIZE_CONTROLS] ?: return null
+        val shutter = mutableListOf<CameraSettings.Control>()
+        val aperture = mutableListOf<CameraSettings.Control>()
+        val iso = mutableListOf<CameraSettings.Control>()
+        for ((control, place, codes) in CONTROL_PLACES) {
+            when (codes[table.getOrNull(place)]) {
+                Setting.SHUTTER -> shutter += control
+                Setting.APERTURE -> aperture += control
+                Setting.ISO -> iso += control
+                null -> Unit
+            }
+        }
+        return CameraSettings.Controls(shutter, aperture, iso)
+    }
+
+    private enum class Setting { SHUTTER, APERTURE, ISO }
+
+    private val DIAL_CODES = mapOf(0x0D to Setting.SHUTTER, 0x0E to Setting.APERTURE)
+    private val CONTROL_PLACES = listOf(
+        Triple(CameraSettings.Control.MAIN_DIAL, 24, DIAL_CODES),
+        Triple(CameraSettings.Control.QUICK_DIAL, 26, DIAL_CODES),
+        Triple(CameraSettings.Control.CONTROL_RING, 56, mapOf(0x54 to Setting.SHUTTER, 0x5B to Setting.ISO)),
+    )
+
     /** [current] with [changes] applied, in the camera's own words as [CameraSettings] keeps them. */
     fun apply(changes: List<PropChange>, current: CameraSettings): CameraSettings {
         var s = current
@@ -255,6 +335,7 @@ object EosPtp {
                 Prop.SHUTTER -> s.copy(shutter = EosValues.shutter(c.value))
                 Prop.ISO -> s.copy(iso = EosValues.iso(c.value))
                 Prop.EXPOSURE_COMP -> s.copy(exposureComp = EosValues.exposureComp(c.value))
+                Prop.BATTERY_POWER -> EosValues.batteryPower(c.value)?.let { s.copy(battery = it) } ?: s
                 else -> s
             }
         }
@@ -300,6 +381,16 @@ object EosPtp {
  * Control API writes them, so [CameraSettings] formats both the same way.
  */
 object EosValues {
+    /** Canon's battery steps as a percentage, as gphoto2 reads them; others, such as on mains power, say nothing. */
+    fun batteryPower(code: Int): Int? = when (code) {
+        0 -> 10
+        5 -> 25
+        1 -> 50
+        4 -> 75
+        2 -> 100
+        else -> null
+    }
+
     private val thirdOffsets = intArrayOf(0, 3, 5)
 
     /** Builds code → label from labels in third stops and labels in half stops, from [firstCode]. */
