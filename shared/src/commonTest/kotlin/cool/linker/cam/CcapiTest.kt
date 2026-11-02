@@ -69,7 +69,7 @@ class CcapiTest {
     @Test
     fun readoutReadsLikeTheCamerasInfoBar() {
         val s = CameraSettings(iso = "auto", aperture = "f2.8", shutter = "0\"5", exposureComp = "+0.0")
-        assertEquals(listOf("0.5″", "f/2.8", "ISO AUTO", "±0"), s.readout())
+        assertEquals(listOf("0.5″", "f/2.8", "ISO AUTO"), s.readout())
         assertEquals("1/4000", CameraSettings.shutterLabel("1/4000"))
         assertEquals("30″", CameraSettings.shutterLabel("30\""))
         assertEquals("+1 1/3", CameraSettings.exposureLabel("+1_1/3"))

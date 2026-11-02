@@ -5,6 +5,7 @@ import java.io.DataInputStream
 import java.io.IOException
 import java.io.OutputStream
 import java.net.Socket
+import kotlin.math.abs
 
 /**
  * One remote-control session with a Canon EOS body over PTP/IP, reading its
@@ -124,14 +125,21 @@ class EosSession(
             stage = "events"
 
             var settings = CameraSettings()
-            fun report(next: CameraSettings) {
+            // The standard battery level, where the camera answers it, counts finer than Canon's own
+            // steps; but where the two disagree by more than a step, the camera's own is the one it shows.
+            var preciseBattery: Int? = null
+            var steppedBattery: Int? = null
+            fun report(changed: CameraSettings) {
+                val stepped = steppedBattery
+                val precise = preciseBattery?.takeIf { stepped == null || abs(it - stepped) <= BATTERY_STEP }
+                val next = changed.copy(battery = precise ?: stepped ?: changed.battery)
                 if (next != settings) {
                     settings = next
                     onSettings(settings)
                 }
             }
-            // The battery isn't in the change events; it's asked for now and then.
-            val hasBattery = info == null || EosPtp.Prop.BATTERY_LEVEL in info.properties
+            // The standard battery level isn't in the change events; it's asked for now and then.
+            var hasBattery = info == null || EosPtp.Prop.BATTERY_LEVEL in info.properties
             var batteryAt = 0L
             var useEvents = offers(EosPtp.Op.GET_EVENT_DATA)
             var eventFailures = 0
@@ -142,19 +150,34 @@ class EosSession(
                     // Canon refuses GetDevicePropValue here; the description carries the value too.
                     val (code, data) = transact(cmdIn, cmdOut, EosPtp.Op.GET_DEVICE_PROP_DESC, EosPtp.Prop.BATTERY_LEVEL, retryBusy = false)
                     val desc = if (code == EosPtp.Response.OK) EosPtp.parsePropDesc(data) else null
-                    if (desc != null) report(settings.copy(battery = EosPtp.batteryPercent(desc.current, desc.range)))
+                    if (desc != null) {
+                        if (preciseBattery == null) Log.i(TAG, "battery level: ${desc.current} of ${desc.range?.let { "${it.min}..${it.max}" }}")
+                        preciseBattery = EosPtp.batteryPercent(desc.current, desc.range)
+                        report(settings)
+                    } else {
+                        // Canon's own steps, from the change events, stand in.
+                        Log.i(TAG, "battery level answered 0x%x with %d bytes; using the camera's own steps".format(code, data.size))
+                        hasBattery = false
+                    }
                 }
                 if (useEvents) {
                     val (code, data) = transact(cmdIn, cmdOut, EosPtp.Op.GET_EVENT_DATA, retryBusy = false)
                     if (code == EosPtp.Response.OK) {
                         eventFailures = 0
                         val changes = EosPtp.propChanges(data)
+                        changes.lastOrNull { it.prop == EosPtp.Prop.BATTERY_POWER }
+                            ?.let { EosValues.batteryPower(it.value) }
+                            ?.let { steppedBattery = it }
                         if (firstEvents) {
                             firstEvents = false
                             Log.i(TAG, "first events: ${data.size} bytes, ${changes.size} property changes: " +
                                 changes.joinToString { "%x=%x".format(it.prop, it.value) })
                         }
-                        if (changes.isNotEmpty()) report(EosPtp.apply(changes, settings))
+                        val controls = EosPtp.controls(EosPtp.customFunctions(data))
+                        if (changes.isNotEmpty()) {
+                            val next = EosPtp.apply(changes, settings)
+                            report(controls?.let { next.copy(controls = it) } ?: next)
+                        }
                     } else if (code == EosPtp.Response.DEVICE_BUSY) {
                         // Busy in a menu or while writing a file. Asking setting by setting wouldn't help:
                         // Canon refuses that, and the readout would freeze until the link restarted.
@@ -278,6 +301,9 @@ class EosSession(
         private const val EVENT_FAILURES_BEFORE_POLLING = 5
         private const val PROP_POLL_MS = 500L
         private const val BUSY_BACKOFF_MS = 300L
+
+        /** Canon's own battery level counts in quarters. */
+        private const val BATTERY_STEP = 25
 
         /** A battery drains over minutes; twice a minute keeps it current without crowding the link. */
         private const val BATTERY_POLL_MS = 30_000L

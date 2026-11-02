@@ -56,6 +56,49 @@ class EosPtpTest {
     }
 
     @Test
+    fun canonsOwnBatteryStepsReadAsAPercentage() {
+        // An R10 sends 2 with a full battery.
+        val full = EosPtp.apply(listOf(EosPtp.PropChange(0xD111, 2)), CameraSettings())
+        assertEquals(100, full.battery)
+        assertEquals(25, EosPtp.apply(listOf(EosPtp.PropChange(0xD111, 5)), full).battery)
+        // A step it doesn't know, as on mains power, keeps what was shown.
+        assertEquals(100, EosPtp.apply(listOf(EosPtp.PropChange(0xD111, 3)), full).battery)
+    }
+
+    @Test
+    fun customizeDialsSaysWhatTurnsEachSetting() {
+        // An R10's button and dial table as it sent it: main dial on shutter speed, rear dial on
+        // aperture, and the lens control ring set to shutter speed too.
+        val r10 = (
+            "d40100000100000004000000c8010000010000000c0700006e0000001d00000000000000130000000000000000000000" +
+            "00000000000000000e00000000000000000000000000000000000000000000000e000000920000000000000004000000" +
+            "000000003500000000000000190000000000000025000000000000000d000000000000000e000000020000005b000000" +
+            "0200000005000000070000001d000000000000000a000000000000001d0000000000000032000000000000001d000000" +
+            "000000001d00000000000000000000000000000000000000000000005a000000000000001d0000000000000036000000" +
+            "000000004e00000000000000540000000000000067000000000000003400000000000000690000000000000035000000" +
+            "00000000ffff0000000000000300000000150000000f0000000000000000000000000000000000000000000000000000" +
+            "0000000000000000ffff000000000000000000005014000000000000000000000e000000000000000000000000000000" +
+            "000000000000000000000000ffff0000000000000700000003000000040000004f000000010000000400000000000000" +
+            "0000000000000000010000001d000000000000000a000000000000001d00000000000000"
+            ).chunked(2).map { it.toInt(16).toByte() }.toByteArray()
+        fun u32(v: Int) = byteArrayOf(v.toByte(), (v shr 8).toByte(), (v shr 16).toByte(), (v shr 24).toByte())
+        fun events(value: ByteArray) = u32(12 + value.size) + u32(0xC189) + u32(0xD1A0) + value + u32(8) + u32(0)
+
+        val functions = EosPtp.customFunctions(events(r10))
+        assertEquals(110, functions[0x070C]?.size)
+        val controls = EosPtp.controls(functions)!!
+        assertEquals(listOf(CameraSettings.Control.MAIN_DIAL, CameraSettings.Control.CONTROL_RING), controls.shutter)
+        assertEquals(listOf(CameraSettings.Control.QUICK_DIAL), controls.aperture)
+        assertEquals(emptyList(), controls.iso)
+
+        // The ring back on ISO, as the camera came: 0x5B in its place, the table's 57th value.
+        val ringOnIso = r10.copyOf().also { it[28 + 56 * 4] = 0x5B }
+        assertEquals(listOf(CameraSettings.Control.CONTROL_RING), EosPtp.controls(EosPtp.customFunctions(events(ringOnIso)))!!.iso)
+        // Events without the table say nothing about the controls.
+        assertEquals(null, EosPtp.controls(EosPtp.customFunctions(u32(8) + u32(0))))
+    }
+
+    @Test
     fun deviceInfoListsWhatTheCameraCanDo() {
         fun u16(v: Int) = byteArrayOf(v.toByte(), (v shr 8).toByte())
         fun u32(v: Int) = u16(v) + u16(v shr 16)

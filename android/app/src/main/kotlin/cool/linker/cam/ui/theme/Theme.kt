@@ -49,6 +49,9 @@ object LcType {
     val Toggle = TextStyle(fontSize = 12.sp, fontWeight = FontWeight.SemiBold, letterSpacing = 0.4.sp, fontFeatureSettings = TABULAR)
     val Readout = TextStyle(color = LcColors.Paper, fontSize = 12.sp, fontFeatureSettings = TABULAR)
     val CameraValue = TextStyle(color = LcColors.Paper, fontSize = 15.sp, fontWeight = FontWeight.SemiBold, fontFeatureSettings = TABULAR)
+
+    /** Shutter speed and aperture, the two numbers read at a glance while shooting. */
+    val CameraValueLarge = TextStyle(color = LcColors.Paper, fontSize = 24.sp, lineHeight = 28.sp, fontWeight = FontWeight.SemiBold, fontFeatureSettings = TABULAR)
     val Legend = TextStyle(color = LcColors.Muted, fontSize = 12.sp, fontWeight = FontWeight.Medium, letterSpacing = 0.6.sp)
 }
 

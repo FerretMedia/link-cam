@@ -93,7 +93,8 @@ val CameraLinkState.open: Boolean
     get() = when (this) {
         CameraLinkState.Off, is CameraLinkState.Waiting -> true
         is CameraLinkState.Searching -> background
-        is CameraLinkState.Failed -> !retrying
+        // Keeping at a saved camera on its own: Wi-Fi details on screen are news, of it or of another.
+        is CameraLinkState.Failed -> !retrying || camera != null
         else -> false
     }
 
@@ -208,16 +209,26 @@ class CameraLink(context: Context, private val store: SettingsStore) {
      * Pairs with them when nothing else is under way, or reconnects if they're
      * a saved camera's. A camera the user disconnected stays off unless it
      * shows new details, which only a fresh pairing does.
+     *
+     * A saved camera shows this screen again whenever its connection drops,
+     * and keeps showing it until Link Cam is back: so it's gone after every
+     * time it's seen, not once, and the link keeps at it.
      */
     fun offerFromScreen(seen: WifiScreen.Credentials) {
         val now = _state.value
-        if (!now.open || seen.password == triedFromScreen) return
+        if (!now.open) return
         val wifi = CameraWifi(seen.ssid, seen.password)
         val known = CameraBook.withWifi(cameras.value, wifi)
-        if (known != null && (!autoConnect || known.id == now.camera)) return
+        if (known != null) {
+            if (!autoConnect || known.id == now.camera) return
+            Log.i(TAG, "${known.name} is waiting on its screen; reconnecting")
+            start { reconnect(only = known) }
+            return
+        }
+        if (seen.password == triedFromScreen) return
         triedFromScreen = seen.password
         Log.i(TAG, "read ${seen.ssid} off the camera's screen")
-        if (known != null) connect(known) else pair(wifi, fromScreen = true)
+        pair(wifi, fromScreen = true)
     }
 
     /**
@@ -321,8 +332,9 @@ class CameraLink(context: Context, private val store: SettingsStore) {
          * once; while none is around, looks again every few seconds, as long
          * as the app is on screen.
          *
-         * [only] is tried once if it never answers, so the user hears it isn't
-         * there; once it has connected, a drop is waited out like any other.
+         * [only] is kept at too, quietly after the first try, unless it turns
+         * Link Cam down or Android would ask the user each time it's joined:
+         * then it's tried once, so the user hears it isn't there.
          */
         suspend fun reconnect(only: SavedCamera?) {
             var keepAt = only == null
@@ -345,10 +357,15 @@ class CameraLink(context: Context, private val store: SettingsStore) {
                     continue
                 }
                 if (!keepAt) {
-                    if (_state.value !is CameraLinkState.Failed) {
-                        set(CameraLinkState.Failed(notAround(only!!.name), retrying = false, step = LinkStep.WIFI, camera = only.id))
+                    val failed = _state.value as? CameraLinkState.Failed
+                    if (only!!.reconnectsQuietly && failed?.retrying != false) {
+                        keepAt = true
+                    } else {
+                        if (failed == null) {
+                            set(CameraLinkState.Failed(notAround(only.name), retrying = false, step = LinkStep.WIFI, camera = only.id))
+                        }
+                        return
                     }
-                    return
                 }
                 network.releaseCameraWifi()
                 if (!foreground) {
