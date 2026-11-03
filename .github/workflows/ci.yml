@@ -20,5 +20,9 @@ jobs:
       - uses: gradle/actions/setup-gradle@v6
       - name: Shared tests
         run: ./gradlew :shared:jvmTest
+      # The iPad app's half of the shared module compiles on Linux too, so a
+      # change that breaks it shows up here without a Mac runner.
+      - name: Shared module for iOS
+        run: ./gradlew :shared:compileKotlinIosArm64
       - name: Build the app
         run: ./gradlew :android:app:assembleDebug

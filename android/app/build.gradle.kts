@@ -1,7 +1,26 @@
+import java.util.Properties
+
 plugins {
     alias(libs.plugins.android.application)
     alias(libs.plugins.kotlin.compose)
 }
+
+// One version for both apps, in /VERSION. 1.2.3 is versionCode 10203, as
+// scripts/version-code.sh works it out for the iPad.
+val appVersion = rootProject.file("VERSION").readText().trim()
+val appVersionCode = appVersion.split(".").map(String::toInt).let { (major, minor, patch) ->
+    require(minor < 100 && patch < 100) { "VERSION: minor and patch stay below 100" }
+    major * 10000 + minor * 100 + patch
+}
+
+// Release signing comes from outside the repository: environment variables in
+// CI, or keystore.properties (gitignored) on a developer's machine. Without
+// either, a release build comes out unsigned.
+val signingProps = Properties().apply {
+    rootProject.file("keystore.properties").takeIf { it.exists() }?.inputStream()?.use(::load)
+}
+fun signing(env: String, prop: String): String? = System.getenv(env) ?: signingProps.getProperty(prop)
+val releaseStoreFile = signing("LINKCAM_KEYSTORE_FILE", "storeFile")
 
 android {
     namespace = "cool.linker.cam"
@@ -11,8 +30,22 @@ android {
         applicationId = "cool.linker.cam"
         minSdk = 29
         targetSdk = 36
-        versionCode = 1
-        versionName = "0.1.0"
+        versionCode = appVersionCode
+        versionName = appVersion
+        // The USB driver is built for these two only (android/uvc); without the
+        // filter, ML Kit would add 32-bit libraries that can't run without it.
+        ndk { abiFilters += listOf("arm64-v8a", "x86_64") }
+    }
+
+    signingConfigs {
+        if (releaseStoreFile != null) {
+            create("release") {
+                storeFile = rootProject.file(releaseStoreFile)
+                storePassword = signing("LINKCAM_KEYSTORE_PASSWORD", "storePassword")
+                keyAlias = signing("LINKCAM_KEY_ALIAS", "keyAlias")
+                keyPassword = signing("LINKCAM_KEY_PASSWORD", "keyPassword")
+            }
+        }
     }
 
     sourceSets {
@@ -29,7 +62,7 @@ android {
             isMinifyEnabled = true
             isShrinkResources = true
             proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
-            // Signing for release builds is configured outside the repository.
+            signingConfig = signingConfigs.findByName("release")
         }
     }
 
