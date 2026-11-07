@@ -1,0 +1,79 @@
+# The iPad app's Xcode project, as XcodeGen input. Run ./generate.sh rather
+# than xcodegen directly: it writes the version from /VERSION first. The
+# generated LinkCam.xcodeproj is not committed.
+name: LinkCam
+options:
+  bundleIdPrefix: cool.linker
+  deploymentTarget:
+    iOS: "17.0"
+  createIntermediateGroups: true
+  developmentLanguage: en
+settings:
+  base:
+    SWIFT_VERSION: "5.0"
+targets:
+  LinkCam:
+    type: application
+    platform: iOS
+    deploymentTarget: "17.0"
+    configFiles:
+      Debug: Config/LinkCam.xcconfig
+      Release: Config/LinkCam.xcconfig
+    sources:
+      - path: LinkCam
+        excludes:
+          - Info.plist
+      - path: ../brand/ios/Brand.xcassets
+    info:
+      path: LinkCam/Info.plist
+      properties:
+        CFBundleDisplayName: $(LINKCAM_DISPLAY_NAME)
+        CFBundleShortVersionString: $(MARKETING_VERSION)
+        CFBundleVersion: $(CURRENT_PROJECT_VERSION)
+        LSApplicationCategoryType: public.app-category.photography
+        NSCameraUsageDescription: >-
+          Link Cam shows the picture from a capture device plugged into this
+          iPad. It never opens the iPad's own cameras.
+        UILaunchScreen: {}
+        UIApplicationSceneManifest:
+          UIApplicationSupportsMultipleScenes: false
+        UISupportedInterfaceOrientations~ipad:
+          - UIInterfaceOrientationPortrait
+          - UIInterfaceOrientationPortraitUpsideDown
+          - UIInterfaceOrientationLandscapeLeft
+          - UIInterfaceOrientationLandscapeRight
+        UIStatusBarHidden: true
+        UIUserInterfaceStyle: Dark
+        ITSAppUsesNonExemptEncryption: false
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: cool.linker.cam
+        PRODUCT_NAME: LinkCam
+        # iPad only: iPhone has no support for USB video devices.
+        TARGETED_DEVICE_FAMILY: "2"
+        SUPPORTS_MACCATALYST: NO
+        SUPPORTS_MAC_DESIGNED_FOR_IPHONE_IPAD: NO
+        SUPPORTS_XR_DESIGNED_FOR_IPHONE_IPAD: NO
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
+        CODE_SIGN_STYLE: Automatic
+        SWIFT_OBJC_BRIDGING_HEADER: LinkCam/LinkCam-Bridging-Header.h
+        # The shared Kotlin module, built by the script below.
+        FRAMEWORK_SEARCH_PATHS: $(inherited) $(SRCROOT)/../shared/build/xcode-frameworks/$(CONFIGURATION)/$(SDK_NAME)
+        OTHER_LDFLAGS: $(inherited) -framework LinkCamShared
+        # Gradle writes into the repository's build folders.
+        ENABLE_USER_SCRIPT_SANDBOXING: NO
+    preBuildScripts:
+      - name: Build the shared Kotlin module
+        basedOnDependencyAnalysis: false
+        script: |
+          cd "$SRCROOT/.."
+          # Xcode starts scripts with a bare environment: find a JDK for Gradle.
+          if [ -z "${JAVA_HOME:-}" ] && [ -x /usr/libexec/java_home ]; then
+            JAVA_HOME="$(/usr/libexec/java_home 2>/dev/null || true)"
+            export JAVA_HOME
+          fi
+          if [ -z "${JAVA_HOME:-}" ] && [ -d /opt/homebrew/opt/openjdk ]; then
+            export JAVA_HOME=/opt/homebrew/opt/openjdk
+          fi
+          ./gradlew --console=plain :shared:embedAndSignAppleFrameworkForXcode
+    scheme: {}

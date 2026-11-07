@@ -1,0 +1,251 @@
+name: Release
+
+# Releases are cut by release-please (https://github.com/googleapis/release-please),
+# as in many large open source projects. On every push to main it reads the
+# Conventional Commit titles merged since the last release and keeps a release
+# pull request open, with the next version in /VERSION and the changelog.
+# Merging that pull request tags vX.Y.Z and makes a draft release; this
+# workflow then builds the APK and the iPad app, attaches them, publishes the
+# release, and merges main back into dev.
+#
+# Run it by hand (Actions › Release › Run workflow) with a tag to rebuild that
+# release's files.
+#
+# Secrets (Settings › Secrets and variables › Actions), see docs/releasing.md:
+#   Android, required:  LINKCAM_KEYSTORE_BASE64, LINKCAM_KEYSTORE_PASSWORD,
+#                       LINKCAM_KEY_ALIAS, LINKCAM_KEY_PASSWORD
+#   iPad, optional:     APPLE_TEAM_ID, ASC_KEY_ID, ASC_ISSUER_ID, ASC_KEY_P8_BASE64
+#                       With these the build also goes to TestFlight; without
+#                       them only the unsigned IPA is made, for sideloading.
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Release tag to rebuild, like v0.2.0
+        required: true
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+jobs:
+  release-please:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+      issues: write
+    outputs:
+      release_created: ${{ steps.rp.outputs.release_created }}
+      tag: ${{ steps.rp.outputs.tag_name }}
+    steps:
+      # Always runs, so the jobs after it aren't skipped on a manual run.
+      - id: rp
+        if: github.event_name == 'push'
+        uses: googleapis/release-please-action@v5
+        with:
+          config-file: release-please-config.json
+          manifest-file: .release-please-manifest.json
+
+  plan:
+    needs: release-please
+    if: needs.release-please.outputs.release_created == 'true' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    outputs:
+      tag: ${{ steps.v.outputs.tag }}
+      version: ${{ steps.v.outputs.version }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ needs.release-please.outputs.tag || inputs.tag }}
+      - id: v
+        name: Read and check the version
+        env:
+          TAG: ${{ needs.release-please.outputs.tag || inputs.tag }}
+        run: |
+          version=$(tr -d '[:space:]' < VERSION)
+          if [ "${TAG}" != "v${version}" ]; then
+            echo "::error::Tag ${TAG} doesn't match VERSION (${version})"
+            exit 1
+          fi
+          scripts/version-code.sh "${version}" >/dev/null
+          echo "tag=${TAG}" >> "$GITHUB_OUTPUT"
+          echo "version=${version}" >> "$GITHUB_OUTPUT"
+
+  android:
+    needs: plan
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ needs.plan.outputs.tag }}
+      - uses: actions/setup-java@v6
+        with:
+          distribution: temurin
+          java-version: 21
+      - uses: gradle/actions/setup-gradle@v6
+      - name: Signing key
+        env:
+          KEYSTORE_BASE64: ${{ secrets.LINKCAM_KEYSTORE_BASE64 }}
+        run: |
+          if [ -z "${KEYSTORE_BASE64}" ]; then
+            echo "::error::LINKCAM_KEYSTORE_BASE64 isn't set, so the APK can't be signed. See docs/releasing.md."
+            exit 1
+          fi
+          echo "${KEYSTORE_BASE64}" | base64 --decode > "${RUNNER_TEMP}/release.jks"
+      - name: Test and build
+        env:
+          LINKCAM_KEYSTORE_FILE: ${{ runner.temp }}/release.jks
+          LINKCAM_KEYSTORE_PASSWORD: ${{ secrets.LINKCAM_KEYSTORE_PASSWORD }}
+          LINKCAM_KEY_ALIAS: ${{ secrets.LINKCAM_KEY_ALIAS }}
+          LINKCAM_KEY_PASSWORD: ${{ secrets.LINKCAM_KEY_PASSWORD }}
+        run: ./gradlew :shared:jvmTest :android:app:assembleRelease
+      - name: Name the APK
+        run: |
+          mkdir -p out
+          cp android/app/build/outputs/apk/release/app-release.apk "out/LinkCam-${{ needs.plan.outputs.version }}.apk"
+          rm -f "${RUNNER_TEMP}/release.jks"
+          (cd out && sha256sum *.apk > "LinkCam-${{ needs.plan.outputs.version }}.apk.sha256")
+      - uses: actions/upload-artifact@v7
+        with:
+          name: android
+          path: out/*
+          if-no-files-found: error
+
+  ipad:
+    needs: plan
+    runs-on: macos-26
+    env:
+      VERSION: ${{ needs.plan.outputs.version }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ needs.plan.outputs.tag }}
+      - uses: actions/setup-java@v6
+        with:
+          distribution: temurin
+          java-version: 21
+      - uses: gradle/actions/setup-gradle@v6
+      - name: Generate the Xcode project
+        run: |
+          brew install xcodegen
+          ios/generate.sh
+      - name: Unsigned IPA, for sideloading
+        run: |
+          xcodebuild -project ios/LinkCam.xcodeproj -scheme LinkCam -configuration Release \
+            -destination 'generic/platform=iOS' -archivePath "${RUNNER_TEMP}/unsigned.xcarchive" \
+            CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY="" \
+            archive | tail -n 40
+          mkdir -p out Payload
+          cp -R "${RUNNER_TEMP}/unsigned.xcarchive/Products/Applications/LinkCam.app" Payload/
+          zip -qry "out/LinkCam-${VERSION}-unsigned.ipa" Payload
+      - name: Signed build, to TestFlight
+        env:
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
+          ASC_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID }}
+          ASC_KEY_P8_BASE64: ${{ secrets.ASC_KEY_P8_BASE64 }}
+        run: |
+          if [ -z "${APPLE_TEAM_ID}" ] || [ -z "${ASC_KEY_ID}" ] || [ -z "${ASC_ISSUER_ID}" ] || [ -z "${ASC_KEY_P8_BASE64}" ]; then
+            echo "::notice::App Store Connect secrets aren't set: skipping TestFlight. See docs/releasing.md."
+            exit 0
+          fi
+          key="${RUNNER_TEMP}/AuthKey_${ASC_KEY_ID}.p8"
+          echo "${ASC_KEY_P8_BASE64}" | base64 --decode > "${key}"
+          auth=(-allowProvisioningUpdates -authenticationKeyPath "${key}" -authenticationKeyID "${ASC_KEY_ID}" -authenticationKeyIssuerID "${ASC_ISSUER_ID}")
+          xcodebuild -project ios/LinkCam.xcodeproj -scheme LinkCam -configuration Release \
+            -destination 'generic/platform=iOS' -archivePath "${RUNNER_TEMP}/signed.xcarchive" \
+            DEVELOPMENT_TEAM="${APPLE_TEAM_ID}" CODE_SIGN_STYLE=Automatic "${auth[@]}" \
+            archive | tail -n 40
+          sed "s/TEAM_ID/${APPLE_TEAM_ID}/" ios/ExportOptions-TestFlight.plist > "${RUNNER_TEMP}/ExportOptions.plist"
+          xcodebuild -exportArchive -archivePath "${RUNNER_TEMP}/signed.xcarchive" \
+            -exportOptionsPlist "${RUNNER_TEMP}/ExportOptions.plist" -exportPath "${RUNNER_TEMP}/export" "${auth[@]}"
+          rm -f "${key}"
+      - uses: actions/upload-artifact@v7
+        with:
+          name: ipad
+          path: out/*.ipa
+          if-no-files-found: error
+
+  # Publishes once the APK is there. A failed iPad build doesn't hold the
+  # Android release back; rebuild it later with a manual run.
+  publish:
+    needs: [plan, android, ipad]
+    if: always() && needs.plan.result == 'success' && needs.android.result == 'success'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      TAG: ${{ needs.plan.outputs.tag }}
+      VERSION: ${{ needs.plan.outputs.version }}
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          path: out
+          merge-multiple: true
+      - name: Attach the files
+        run: gh release upload "${TAG}" out/* --clobber --repo "${GITHUB_REPOSITORY}"
+      - name: Add install notes
+        run: |
+          gh release view "${TAG}" --repo "${GITHUB_REPOSITORY}" --json body --jq .body > notes.md
+          if ! grep -q '<!-- linkcam-install -->' notes.md; then
+            {
+              echo
+              echo '<!-- linkcam-install -->'
+              echo '### Install'
+              echo
+              echo "- **Android:** download \`LinkCam-${VERSION}.apk\` below and open it on the phone. Android asks once to allow installs from the browser or file manager. Android 10 or newer."
+              if [ -e "out/LinkCam-${VERSION}-unsigned.ipa" ]; then
+                echo "- **iPad:** \`LinkCam-${VERSION}-unsigned.ipa\` is for sideloading with AltStore or Sideloadly, which sign it with your own Apple ID. iPadOS 17 or newer, USB-C iPads."
+              fi
+            } >> notes.md
+            gh release edit "${TAG}" --repo "${GITHUB_REPOSITORY}" --notes-file notes.md
+          fi
+      - name: Publish
+        run: gh release edit "${TAG}" --repo "${GITHUB_REPOSITORY}" --draft=false
+      - name: Report a missing iPad build
+        if: needs.ipad.result != 'success'
+        run: echo "::warning::The iPad build failed, so ${TAG} has no IPA. Fix it and run this workflow by hand with tag ${TAG}."
+
+  # Brings the release commit (VERSION and CHANGELOG) back into dev, so dev
+  # builds carry the new version. If dev has moved on in a way that conflicts,
+  # or a branch rule blocks the push, it opens a pull request instead.
+  sync-dev:
+    needs: [plan, publish]
+    if: always() && github.event_name == 'push' && needs.plan.result == 'success'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      TAG: ${{ needs.plan.outputs.tag }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      - name: Merge main into dev
+        run: |
+          if ! git ls-remote --exit-code --heads origin dev >/dev/null; then
+            echo "No dev branch; nothing to do."
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git checkout -B dev origin/dev
+          if git merge --no-ff origin/main -m "chore: merge ${TAG} back into dev" && git push origin dev; then
+            exit 0
+          fi
+          git merge --abort 2>/dev/null || true
+          if [ -z "$(gh pr list --base dev --head main --state open --json number --jq '.[].number')" ]; then
+            gh pr create --base dev --head main \
+              --title "chore: merge ${TAG} back into dev" \
+              --body "Brings the ${TAG} release commit back into \`dev\`. It couldn't be merged automatically. **Merge with a merge commit**, not squash."
+          fi

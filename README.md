@@ -1,6 +1,6 @@
 # Link Cam
 
-An open source video monitor for Android, by Linker from Ferret Media.
+An open source video monitor for Android and iPad, by Linker from Ferret Media.
 
 Plug an HDMI capture dongle into your phone or tablet's USB-C port and get a
 clean, low-latency picture of your camera's output, with the tools you'd
@@ -9,6 +9,15 @@ find on a field monitor.
 > **Status: early.** The capture pipeline and the first tools work against the
 > built-in test pattern; capture from a USB device is written but not yet
 > verified on hardware. Expect things to change.
+
+## Download
+
+- **Stable:** the [latest release](https://github.com/FerretMedia/link-cam/releases/latest).
+  On Android, download `LinkCam-x.y.z.apk` and open it on the phone.
+- **Dev build:** [Link Cam Dev](https://github.com/FerretMedia/link-cam/releases/tag/dev-build),
+  rebuilt on every merge into `dev`. It installs next to the stable app.
+
+See [docs/releasing.md](docs/releasing.md) for how builds and releases are made.
 
 ## What it does today
 
@@ -29,11 +38,16 @@ find on a field monitor.
 
 ## Requirements
 
-- Android 10 or newer with USB host (OTG) support.
+- Android 10 or newer with USB host (OTG) support, or an iPad with USB-C on
+  iPadOS 17 or newer. iPhone doesn't support USB video devices.
 - A UVC capture device. Most cheap USB HDMI capture dongles are UVC.
 
-Android only gives apps access to USB video devices if they hold the camera
-permission, so Link Cam asks for it. It never opens the phone's own cameras.
+Both systems only give apps access to USB video devices if they have camera
+permission, so Link Cam asks for it. It never opens the device's own cameras.
+
+The iPad app is new. It has the monitor, the tools, the scopes, HDR view and
+noise reduction. The camera link (reading the camera's settings over Wi-Fi)
+is Android only for now.
 
 ## Building
 
@@ -46,15 +60,28 @@ echo "sdk.dir=$HOME/Android/Sdk" > local.properties
 The native libraries (libusb, libuvc, libjpeg-turbo) are downloaded and built
 from source on the first build, pinned by version and checksum.
 
+The iPad app needs a Mac with Xcode and [XcodeGen](https://github.com/yonaskolb/XcodeGen):
+
+```sh
+ios/generate.sh                        # writes ios/LinkCam.xcodeproj
+open ios/LinkCam.xcodeproj             # or: ios/install.sh, to a connected iPad
+```
+
+Xcode builds the shared Kotlin module through Gradle, so a JDK must be
+installed. See [docs/releasing.md](docs/releasing.md) for signing, branches and releases.
+
 ## How it's built
 
 ```
 shared/          Kotlin Multiplatform: colour maths, tool reference maths,
-                 the .cube parser, design tokens. Tested on the JVM.
+                 the .cube parser, design tokens, the test pattern. Tested on
+                 the JVM; the iPad links it as the LinkCamShared framework.
 android/uvc/     The USB Video Class driver: libusb + libuvc + libjpeg-turbo
                  behind a small Kotlin API (JNI, CMake).
-android/app/     The app: Compose UI, managers, the GLES 3 renderer and its
-                 shaders (assets/shaders).
+android/app/     The Android app: Compose UI, managers, the GLES 3 renderer
+                 and its shaders (assets/shaders).
+ios/             The iPad app: SwiftUI, AVFoundation capture, and the same
+                 shaders ported to Metal (LinkCam/Render).
 brand/           Name, glyph and icon. Not open source; see below.
 ```
 

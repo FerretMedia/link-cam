@@ -9,3 +9,6 @@ License; see [LICENSE](LICENSE) and [TRADEMARKS.md](../TRADEMARKS.md).
 - `android/res/`: the same glyph as Android resources, plus the adaptive
   launcher icon and the app name. The app module adds this folder as a resource
   directory, so a fork can swap the whole folder for its own.
+- `ios/`: the same for the iPad app. `Brand.xcassets` holds the app icon and
+  the glyph, `Brand.xcconfig` the app name, and `icon.svg` is the icon's
+  source (render it to `AppIcon.png` at 1024 px, without alpha).
