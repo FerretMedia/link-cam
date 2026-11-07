@@ -10,6 +10,15 @@ find on a field monitor.
 > built-in test pattern; capture from a USB device is written but not yet
 > verified on hardware. Expect things to change.
 
+## Download
+
+- **Stable:** the [latest release](https://github.com/FerretMedia/link-cam/releases/latest).
+  On Android, download `LinkCam-x.y.z.apk` and open it on the phone.
+- **Dev build:** [Link Cam Dev](https://github.com/FerretMedia/link-cam/releases/tag/dev-build),
+  rebuilt on every merge into `dev`. It installs next to the stable app.
+
+See [docs/releasing.md](docs/releasing.md) for how builds and releases are made.
+
 ## What it does today
 
 - Live view from USB Video Class (UVC) capture devices: MJPEG, YUY2 and NV12,
@@ -59,7 +68,7 @@ open ios/LinkCam.xcodeproj             # or: ios/install.sh, to a connected iPad
 ```
 
 Xcode builds the shared Kotlin module through Gradle, so a JDK must be
-installed. See [docs/releasing.md](docs/releasing.md) for signing and releases.
+installed. See [docs/releasing.md](docs/releasing.md) for signing, branches and releases.
 
 ## How it's built
 

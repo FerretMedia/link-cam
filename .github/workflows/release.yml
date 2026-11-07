@@ -1,8 +1,15 @@
 name: Release
 
-# Push a tag like v0.2.0 (scripts/release.sh does it) and this builds the
-# Android APK and the iPad app, then drafts a GitHub release with both, to
-# check and publish by hand.
+# Releases are cut by release-please (https://github.com/googleapis/release-please),
+# as in many large open source projects. On every push to main it reads the
+# Conventional Commit titles merged since the last release and keeps a release
+# pull request open, with the next version in /VERSION and the changelog.
+# Merging that pull request tags vX.Y.Z and makes a draft release; this
+# workflow then builds the APK and the iPad app, attaches them, publishes the
+# release, and merges main back into dev.
+#
+# Run it by hand (Actions › Release › Run workflow) with a tag to rebuild that
+# release's files.
 #
 # Secrets (Settings › Secrets and variables › Actions), see docs/releasing.md:
 #   Android, required:  LINKCAM_KEYSTORE_BASE64, LINKCAM_KEYSTORE_PASSWORD,
@@ -13,36 +20,71 @@ name: Release
 
 on:
   push:
-    tags: ["v*"]
+    branches: [main]
   workflow_dispatch:
+    inputs:
+      tag:
+        description: Release tag to rebuild, like v0.2.0
+        required: true
 
 permissions:
   contents: read
 
+concurrency:
+  group: release
+  cancel-in-progress: false
+
 jobs:
-  version:
+  release-please:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+      issues: write
+    outputs:
+      release_created: ${{ steps.rp.outputs.release_created }}
+      tag: ${{ steps.rp.outputs.tag_name }}
+    steps:
+      # Always runs, so the jobs after it aren't skipped on a manual run.
+      - id: rp
+        if: github.event_name == 'push'
+        uses: googleapis/release-please-action@v5
+        with:
+          config-file: release-please-config.json
+          manifest-file: .release-please-manifest.json
+
+  plan:
+    needs: release-please
+    if: needs.release-please.outputs.release_created == 'true' || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     outputs:
+      tag: ${{ steps.v.outputs.tag }}
       version: ${{ steps.v.outputs.version }}
-      code: ${{ steps.v.outputs.code }}
     steps:
       - uses: actions/checkout@v7
+        with:
+          ref: ${{ needs.release-please.outputs.tag || inputs.tag }}
       - id: v
         name: Read and check the version
+        env:
+          TAG: ${{ needs.release-please.outputs.tag || inputs.tag }}
         run: |
           version=$(tr -d '[:space:]' < VERSION)
-          if [ "${GITHUB_REF_TYPE}" = tag ] && [ "${GITHUB_REF_NAME}" != "v${version}" ]; then
-            echo "::error::Tag ${GITHUB_REF_NAME} doesn't match VERSION (${version})"
+          if [ "${TAG}" != "v${version}" ]; then
+            echo "::error::Tag ${TAG} doesn't match VERSION (${version})"
             exit 1
           fi
+          scripts/version-code.sh "${version}" >/dev/null
+          echo "tag=${TAG}" >> "$GITHUB_OUTPUT"
           echo "version=${version}" >> "$GITHUB_OUTPUT"
-          echo "code=$(scripts/version-code.sh "${version}")" >> "$GITHUB_OUTPUT"
 
   android:
-    needs: version
+    needs: plan
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
+        with:
+          ref: ${{ needs.plan.outputs.tag }}
       - uses: actions/setup-java@v6
         with:
           distribution: temurin
@@ -67,21 +109,24 @@ jobs:
       - name: Name the APK
         run: |
           mkdir -p out
-          cp android/app/build/outputs/apk/release/app-release.apk "out/LinkCam-${{ needs.version.outputs.version }}.apk"
+          cp android/app/build/outputs/apk/release/app-release.apk "out/LinkCam-${{ needs.plan.outputs.version }}.apk"
           rm -f "${RUNNER_TEMP}/release.jks"
+          (cd out && sha256sum *.apk > "LinkCam-${{ needs.plan.outputs.version }}.apk.sha256")
       - uses: actions/upload-artifact@v7
         with:
           name: android
-          path: out/*.apk
+          path: out/*
           if-no-files-found: error
 
   ipad:
-    needs: version
+    needs: plan
     runs-on: macos-26
     env:
-      VERSION: ${{ needs.version.outputs.version }}
+      VERSION: ${{ needs.plan.outputs.version }}
     steps:
       - uses: actions/checkout@v7
+        with:
+          ref: ${{ needs.plan.outputs.tag }}
       - uses: actions/setup-java@v6
         with:
           distribution: temurin
@@ -128,20 +173,79 @@ jobs:
           path: out/*.ipa
           if-no-files-found: error
 
+  # Publishes once the APK is there. A failed iPad build doesn't hold the
+  # Android release back; rebuild it later with a manual run.
   publish:
-    needs: [version, android, ipad]
+    needs: [plan, android, ipad]
+    if: always() && needs.plan.result == 'success' && needs.android.result == 'success'
     runs-on: ubuntu-latest
-    if: github.ref_type == 'tag'
     permissions:
       contents: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      TAG: ${{ needs.plan.outputs.tag }}
+      VERSION: ${{ needs.plan.outputs.version }}
     steps:
       - uses: actions/download-artifact@v8
         with:
           path: out
           merge-multiple: true
-      - name: Draft the release
-        env:
-          GH_TOKEN: ${{ github.token }}
+      - name: Attach the files
+        run: gh release upload "${TAG}" out/* --clobber --repo "${GITHUB_REPOSITORY}"
+      - name: Add install notes
         run: |
-          gh release create "${GITHUB_REF_NAME}" out/* --repo "${GITHUB_REPOSITORY}" \
-            --draft --generate-notes --title "Link Cam ${{ needs.version.outputs.version }}"
+          gh release view "${TAG}" --repo "${GITHUB_REPOSITORY}" --json body --jq .body > notes.md
+          if ! grep -q '<!-- linkcam-install -->' notes.md; then
+            {
+              echo
+              echo '<!-- linkcam-install -->'
+              echo '### Install'
+              echo
+              echo "- **Android:** download \`LinkCam-${VERSION}.apk\` below and open it on the phone. Android asks once to allow installs from the browser or file manager. Android 10 or newer."
+              if [ -e "out/LinkCam-${VERSION}-unsigned.ipa" ]; then
+                echo "- **iPad:** \`LinkCam-${VERSION}-unsigned.ipa\` is for sideloading with AltStore or Sideloadly, which sign it with your own Apple ID. iPadOS 17 or newer, USB-C iPads."
+              fi
+            } >> notes.md
+            gh release edit "${TAG}" --repo "${GITHUB_REPOSITORY}" --notes-file notes.md
+          fi
+      - name: Publish
+        run: gh release edit "${TAG}" --repo "${GITHUB_REPOSITORY}" --draft=false
+      - name: Report a missing iPad build
+        if: needs.ipad.result != 'success'
+        run: echo "::warning::The iPad build failed, so ${TAG} has no IPA. Fix it and run this workflow by hand with tag ${TAG}."
+
+  # Brings the release commit (VERSION and CHANGELOG) back into dev, so dev
+  # builds carry the new version. If dev has moved on in a way that conflicts,
+  # or a branch rule blocks the push, it opens a pull request instead.
+  sync-dev:
+    needs: [plan, publish]
+    if: always() && github.event_name == 'push' && needs.plan.result == 'success'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      TAG: ${{ needs.plan.outputs.tag }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      - name: Merge main into dev
+        run: |
+          if ! git ls-remote --exit-code --heads origin dev >/dev/null; then
+            echo "No dev branch; nothing to do."
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git checkout -B dev origin/dev
+          if git merge --no-ff origin/main -m "chore: merge ${TAG} back into dev" && git push origin dev; then
+            exit 0
+          fi
+          git merge --abort 2>/dev/null || true
+          if [ -z "$(gh pr list --base dev --head main --state open --json number --jq '.[].number')" ]; then
+            gh pr create --base dev --head main \
+              --title "chore: merge ${TAG} back into dev" \
+              --body "Brings the ${TAG} release commit back into \`dev\`. It couldn't be merged automatically. **Merge with a merge commit**, not squash."
+          fi

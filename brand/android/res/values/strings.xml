@@ -2,4 +2,5 @@
 <!-- The product name is a trademark of Ferret Media. A fork must use its own. -->
 <resources>
     <string name="app_name" translatable="false">Link Cam</string>
+    <string name="app_name_dev" translatable="false">Link Cam Dev</string>
 </resources>

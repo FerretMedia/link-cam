@@ -12,6 +12,10 @@ val appVersionCode = appVersion.split(".").map(String::toInt).let { (major, mino
     require(minor < 100 && patch < 100) { "VERSION: minor and patch stay below 100" }
     major * 10000 + minor * 100 + patch
 }
+// Dev builds from CI number themselves by the dev branch's commit count, so
+// each one installs over the one before (see .github/workflows/dev-build.yml).
+val buildVersionCode = System.getenv("LINKCAM_VERSION_CODE")?.toInt() ?: appVersionCode
+val buildVersionName = System.getenv("LINKCAM_VERSION_NAME") ?: appVersion
 
 // Release signing comes from outside the repository: environment variables in
 // CI, or keystore.properties (gitignored) on a developer's machine. Without
@@ -30,8 +34,9 @@ android {
         applicationId = "cool.linker.cam"
         minSdk = 29
         targetSdk = 36
-        versionCode = appVersionCode
-        versionName = appVersion
+        versionCode = buildVersionCode
+        versionName = buildVersionName
+        manifestPlaceholders["appLabel"] = "@string/app_name"
         // The USB driver is built for these two only (android/uvc); without the
         // filter, ML Kit would add 32-bit libraries that can't run without it.
         ndk { abiFilters += listOf("arm64-v8a", "x86_64") }
@@ -63,6 +68,14 @@ android {
             isShrinkResources = true
             proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
             signingConfig = signingConfigs.findByName("release")
+        }
+        // A release build of the dev branch, for testers. Its own app ID lets it
+        // sit next to the stable app, with its own settings and paired cameras.
+        create("dev") {
+            initWith(getByName("release"))
+            applicationIdSuffix = ".dev"
+            manifestPlaceholders["appLabel"] = "@string/app_name_dev"
+            matchingFallbacks += "release"
         }
     }
 

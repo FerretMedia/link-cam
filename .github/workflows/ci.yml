@@ -1,16 +1,26 @@
 name: CI
 
+# Runs on every pull request and on every push to dev and main. On a pull
+# request it also leaves a debug APK to try the change, and links it in a
+# comment. See docs/releasing.md for how the branches fit together.
+
 on:
   push:
-    branches: [main]
+    branches: [main, dev]
   pull_request:
 
 permissions:
   contents: read
 
+concurrency:
+  group: ci-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
 jobs:
   build:
     runs-on: ubuntu-latest
+    outputs:
+      apk-url: ${{ steps.upload.outputs.artifact-url }}
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-java@v6
@@ -26,3 +36,57 @@ jobs:
         run: ./gradlew :shared:compileKotlinIosArm64
       - name: Build the app
         run: ./gradlew :android:app:assembleDebug
+      - name: Name the APK
+        if: github.event_name == 'pull_request'
+        run: |
+          mkdir -p out
+          cp android/app/build/outputs/apk/debug/app-debug.apk \
+            "out/LinkCam-pr${{ github.event.pull_request.number }}-debug.apk"
+      - name: Keep the APK
+        id: upload
+        if: github.event_name == 'pull_request'
+        uses: actions/upload-artifact@v7
+        with:
+          name: LinkCam-pr${{ github.event.pull_request.number }}-debug
+          path: out/*.apk
+          if-no-files-found: error
+          retention-days: 14
+      - name: Summary
+        if: github.event_name == 'pull_request'
+        run: |
+          {
+            echo "### Try this pull request"
+            echo
+            echo "[Debug APK](${{ steps.upload.outputs.artifact-url }}) (a zip; unzip it on the phone and install the APK)."
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  # One comment per pull request, updated on every push. A pull request from a
+  # fork gets a read-only token, so it only has the link in the run summary.
+  comment:
+    needs: build
+    if: github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    permissions:
+      pull-requests: write
+    steps:
+      - name: Link the APK
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR: ${{ github.event.pull_request.number }}
+          SHA: ${{ github.event.pull_request.head.sha }}
+          APK_URL: ${{ needs.build.outputs.apk-url }}
+        run: |
+          marker='<!-- linkcam-pr-apk -->'
+          body="${marker}
+          ### 📱 Try this pull request
+
+          [Download the debug APK](${APK_URL}) for ${SHA::7}. It's a zip: unzip it on the phone and open the APK. You need to be signed in to GitHub with access to this repository.
+
+          A debug build has a different signature from the releases and dev builds, so it won't install over them. Uninstall the debug app it replaces, if any, or try it on another device. The link expires after 14 days."
+          id=$(gh api "repos/${GITHUB_REPOSITORY}/issues/${PR}/comments" --paginate \
+            --jq ".[] | select(.body | startswith(\"${marker}\")) | .id" | head -n 1)
+          if [ -n "$id" ]; then
+            gh api -X PATCH "repos/${GITHUB_REPOSITORY}/issues/comments/${id}" -f body="$body" >/dev/null
+          else
+            gh api "repos/${GITHUB_REPOSITORY}/issues/${PR}/comments" -f body="$body" >/dev/null
+          fi

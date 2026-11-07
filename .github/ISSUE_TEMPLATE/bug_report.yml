@@ -1,0 +1,35 @@
+name: Bug report
+description: Something doesn't work as it should
+labels: [bug]
+body:
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened
+      description: What you did, what you expected, and what happened instead.
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: Link Cam version
+      description: From the release you installed, like 0.2.0, or the dev build's name.
+    validations:
+      required: true
+  - type: input
+    id: device
+    attributes:
+      label: Phone or tablet, and system version
+      placeholder: Pixel 10 Pro, Android 17
+    validations:
+      required: true
+  - type: input
+    id: capture
+    attributes:
+      label: Capture device and camera
+      placeholder: UGREEN HDMI capture, Canon R10
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs or screenshots
+      description: Optional. For a crash, `adb logcat` output helps a lot.
