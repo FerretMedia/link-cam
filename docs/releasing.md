@@ -176,13 +176,20 @@ release can be signed.
 
 release-please picks the version from the commit titles. To pick it
 yourself, for example `0.1.0` for the first release, which would otherwise be
-`0.2.0`, end the commit message of the next PR you squash-merge into `dev`
-with a `Release-As` line. In the merge dialog, add it as the last line of the
-description; from the terminal:
+`0.2.0`, put a `Release-As` line in the message of the merge commit when you
+promote `dev` to `main`:
 
 ```sh
-gh pr merge 12 --squash --body "Release-As: 0.1.0"
+gh pr merge 12 --merge --body "Release-As: 0.1.0"
 ```
+
+### Editing the release notes
+
+The release notes come from the release PR's description, and the changelog
+from `CHANGELOG.md` on its branch. To reword them, edit the description and
+push the same change to `CHANGELOG.md` on the `release-please--branches--main…`
+branch, then merge. A push to `main` before then makes release-please write
+the PR again from the commits, so edit last.
 
 ### Fixing a broken release
 

@@ -6,7 +6,9 @@
 #
 # - Creates the dev branch from main, if it isn't there, and makes it the
 #   default, so pull requests target it.
-# - Squash merges take the pull request's title, which release-please reads.
+# - Squash merges take the pull request's title, which release-please reads,
+#   and an empty body: release-please would read the PR's own commits listed
+#   there as more changes.
 #   Merge commits stay allowed, for promoting dev to main.
 # - Lets GitHub Actions open pull requests (release-please's release PR).
 # - On a public repository, or with GitHub Pro, adds rules to main and dev: no
@@ -30,7 +32,7 @@ gh api -X PATCH "repos/${repo}" \
     -F allow_merge_commit=true \
     -F allow_rebase_merge=false \
     -f squash_merge_commit_title=PR_TITLE \
-    -f squash_merge_commit_message=COMMIT_MESSAGES \
+    -f squash_merge_commit_message=BLANK \
     -f merge_commit_title=PR_TITLE \
     -f merge_commit_message=PR_BODY >/dev/null
 echo "  default branch dev; squash merges use the PR title"
