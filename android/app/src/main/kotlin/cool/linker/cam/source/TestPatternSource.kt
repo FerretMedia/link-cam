@@ -1,27 +1,20 @@
 package cool.linker.cam.source
 
 import android.opengl.GLES30
-import cool.linker.cam.model.ColorSpec
-import cool.linker.cam.model.SourceFormat
+import cool.linker.cam.pattern.TestPattern
 import java.nio.ByteBuffer
 import java.util.concurrent.locks.LockSupport
 
 /**
- * A 1080p60 test signal, generated the way a capture device would deliver it:
- * as BT.709 limited-range 4:2:0 planes.
- *
- * Top two thirds: 75% colour bars. Bottom third: a luma ramp from 0 to 100 IRE,
- * which is how to check that zebras and false color fire at the right levels.
- * A white square moves across the bars, so there is motion and a sharp edge
- * for peaking.
+ * The built-in test signal ([TestPattern], shared with the iPad app), produced
+ * on a thread of its own at 60 frames a second.
  */
 class TestPatternSource : FrameSource {
-    override val format = SourceFormat(SourceFormat.Codec.I420, WIDTH, HEIGHT, 60.0)
-    private val spec: ColorSpec = format.defaultColorSpec
+    override val format = TestPattern.format
 
     private val chromaW = WIDTH / 2
     private val chromaH = HEIGHT / 2
-    private val base = arrayOf(ByteArray(WIDTH * HEIGHT), ByteArray(chromaW * chromaH), ByteArray(chromaW * chromaH))
+    private val base = TestPattern.base().let { arrayOf(it.y, it.cb, it.cr) }
 
     // Triple buffer, like the native driver's: the generator owns `writing`,
     // the GL thread owns `reading`, and `ready` changes hands under the lock.
@@ -44,39 +37,6 @@ class TestPatternSource : FrameSource {
     private var received = 0L
     private var dropped = 0L
 
-    init {
-        drawBase()
-    }
-
-    private fun drawBase() {
-        val barsBottom = HEIGHT * 2 / 3
-        val bars = listOf(
-            floatArrayOf(0.75f, 0.75f, 0.75f), // white
-            floatArrayOf(0.75f, 0.75f, 0f), // yellow
-            floatArrayOf(0f, 0.75f, 0.75f), // cyan
-            floatArrayOf(0f, 0.75f, 0f), // green
-            floatArrayOf(0.75f, 0f, 0.75f), // magenta
-            floatArrayOf(0.75f, 0f, 0f), // red
-            floatArrayOf(0f, 0f, 0.75f), // blue
-        ).map { spec.encode(it[0], it[1], it[2]) }
-
-        val ramp = Array(WIDTH) { x ->
-            val level = x.toFloat() / (WIDTH - 1)
-            spec.encode(level, level, level)
-        }
-        for (y in 0 until HEIGHT) {
-            for (x in 0 until WIDTH) {
-                val code = if (y < barsBottom) bars[x * bars.size / WIDTH] else ramp[x]
-                base[0][y * WIDTH + x] = code[0].toByte()
-                if (x % 2 == 0 && y % 2 == 0) {
-                    val i = (y / 2) * chromaW + x / 2
-                    base[1][i] = code[1].toByte()
-                    base[2][i] = code[2].toByte()
-                }
-            }
-        }
-    }
-
     override fun start(onFrame: () -> Unit) {
         if (running) return
         running = true
@@ -87,19 +47,16 @@ class TestPatternSource : FrameSource {
         val period = 1_000_000_000L / 60
         var next = System.nanoTime()
         var frame = 0
-        val white = spec.encode(1f, 1f, 1f)
+        val white = TestPattern.white
         while (running) {
             val planes = slots[writing]
             for (c in 0..2) {
                 planes[c].clear()
                 planes[c].put(base[c])
             }
-            // The moving square: 120 px, sweeping across the bars every 4 s.
-            val size = 120
-            val travel = WIDTH - size
-            val phase = frame % 240
-            val left = (if (phase < 120) phase else 240 - phase) * travel / 120
-            val top = HEIGHT / 3 - size / 2
+            val size = TestPattern.SQUARE
+            val left = TestPattern.squareLeft(frame)
+            val top = TestPattern.SQUARE_TOP
             for (y in top until top + size) {
                 for (x in left until left + size) planes[0].put(y * WIDTH + x, white[0].toByte())
             }
@@ -166,7 +123,7 @@ class TestPatternSource : FrameSource {
     override fun close() = stop()
 
     companion object {
-        const val WIDTH = 1920
-        const val HEIGHT = 1080
+        const val WIDTH = TestPattern.WIDTH
+        const val HEIGHT = TestPattern.HEIGHT
     }
 }

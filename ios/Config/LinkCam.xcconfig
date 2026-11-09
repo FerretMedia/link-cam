@@ -1,0 +1,13 @@
+// Settings kept out of project.yml: the brand, the version and signing.
+
+// The app's name lives in /brand with the rest of the trademarks.
+#include "../../brand/ios/Brand.xcconfig"
+
+// Defaults, replaced by Version.xcconfig, which generate.sh writes from /VERSION.
+MARKETING_VERSION = 0.0.0
+CURRENT_PROJECT_VERSION = 1
+#include? "Version.xcconfig"
+
+// Your Apple team, for signing: copy Signing.local.xcconfig.example to
+// Signing.local.xcconfig and fill it in. Not committed.
+#include? "Signing.local.xcconfig"

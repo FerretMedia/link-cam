@@ -14,6 +14,19 @@ git commit -s
 
 Brand files in `/brand` are not open for contributions.
 
+## Pull requests
+
+- **Branch from `dev` and open the pull request into `dev`.** `main` only
+  gets released code.
+- **Title it as a [Conventional Commit](https://www.conventionalcommits.org)**,
+  like `feat: add a waveform scope` or `fix(usb): reconnect after a reset`.
+  Pull requests are squash-merged, so the title becomes the commit, the
+  changelog line and the next version number. A check enforces it.
+- CI comments a debug APK on your pull request, to try the change on a device.
+
+[docs/releasing.md](docs/releasing.md) explains the branches, the builds and
+how releases are made.
+
 ## Building
 
 You need JDK 17 or newer and the Android SDK. Gradle downloads the rest,
