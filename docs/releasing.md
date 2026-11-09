@@ -106,6 +106,10 @@ release can be signed.
    repository, protects `main` and `dev`. Run it again after making the
    repository public, to add the branch rules.
 
+   If the organization forbids GitHub Actions to open pull requests, the
+   script says so and prints the command an organization admin can run
+   (FerretMedia allows it since November 2026).
+
 ## Everyday work
 
 1. Branch from `dev`:

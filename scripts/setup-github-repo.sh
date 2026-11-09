@@ -35,9 +35,18 @@ gh api -X PATCH "repos/${repo}" \
     -f merge_commit_message=PR_BODY >/dev/null
 echo "  default branch dev; squash merges use the PR title"
 
-gh api -X PUT "repos/${repo}/actions/permissions/workflow" \
+if ! gh api -X PUT "repos/${repo}/actions/permissions/workflow" \
     -f default_workflow_permissions=read \
-    -F can_approve_pull_request_reviews=true >/dev/null
+    -F can_approve_pull_request_reviews=true >/dev/null; then
+    # An organization can forbid it for all its repositories. Turning it on
+    # there still leaves every workflow's token read-only by default.
+    org=${repo%%/*}
+    echo "The ${org} organization doesn't let GitHub Actions open pull requests." >&2
+    echo "An organization admin can allow it, then run this script again:" >&2
+    echo "  gh api -X PUT orgs/${org}/actions/permissions/workflow -f default_workflow_permissions=read -F can_approve_pull_request_reviews=true" >&2
+    echo "or https://github.com/organizations/${org}/settings/actions › Workflow permissions." >&2
+    exit 1
+fi
 echo "  GitHub Actions may open pull requests"
 
 # Rulesets. Role 5 is the repository admin; integration 15368 is GitHub Actions.
