@@ -203,7 +203,7 @@ jobs:
               echo '<!-- linkcam-install -->'
               echo '### Install'
               echo
-              echo "- **Android:** download \`LinkCam-${VERSION}.apk\` below and open it on the phone. Android asks once to allow installs from the browser or file manager. Android 10 or newer."
+              echo "- **Android:** download \`LinkCam-${VERSION}.apk\` below and open it on the phone. Android asks once to allow installs from the browser or file manager. Android 10 or newer with USB host (OTG) support, and a UVC capture dongle (most cheap HDMI capture dongles are UVC)."
               if [ -e "out/LinkCam-${VERSION}-unsigned.ipa" ]; then
                 echo "- **iPad:** \`LinkCam-${VERSION}-unsigned.ipa\` is for sideloading with AltStore or Sideloadly, which sign it with your own Apple ID. iPadOS 17 or newer, USB-C iPads."
               fi
@@ -211,7 +211,7 @@ jobs:
             gh release edit "${TAG}" --repo "${GITHUB_REPOSITORY}" --notes-file notes.md
           fi
       - name: Publish
-        run: gh release edit "${TAG}" --repo "${GITHUB_REPOSITORY}" --draft=false
+        run: gh release edit "${TAG}" --repo "${GITHUB_REPOSITORY}" --draft=false --title "Link Cam ${VERSION}"
       - name: Report a missing iPad build
         if: needs.ipad.result != 'success'
         run: echo "::warning::The iPad build failed, so ${TAG} has no IPA. Fix it and run this workflow by hand with tag ${TAG}."
